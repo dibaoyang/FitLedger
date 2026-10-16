@@ -1,0 +1,92 @@
+# FitLedger GitHub 项目说明与发布清单
+
+这份说明包含可直接填写到 GitHub 仓库页面的文字、公开仓库步骤，以及公开前要核对的文件。仓库根目录应是本文件所在的 `FitLedger` 文件夹。
+
+先审阅 [GITHUB_TEXT_REVIEW.md](GITHUB_TEXT_REVIEW.md) 中汇总的简介、Release 文案和待补全信息；本文件不代表已经上传或发布。
+
+## 仓库名称与 About 简介
+
+建议仓库名称：`FitLedger`
+
+GitHub 的 **Description** 可填写：
+
+> 男大学生为了方便自己减脂自己做了这个饮食规划工具
+
+可选 Website：填写你实际发布 APK 的下载页；暂时没有独立下载页时留空即可。不要填入个人设备路径或签名私钥位置。
+
+可选 Topics：
+
+`android` `kotlin` `jetpack-compose` `nutrition-tracker` `fitness` `offline-first` `room-database`
+
+## 可以放在 GitHub 首页的项目介绍
+
+README 面向使用者，包含功能、首次使用、升级和隐私说明；完整构建与历史功能保留在 DEVELOPMENT.md。正式公开前请检查开发者联系信息，并确认所选许可证符合你的授权意图。
+
+```text
+轻衡（FitLedger）是一款个人使用的 Android 饮食与健身记录工具。它帮助用户记录每日身体数据、食品和营养摄入，设置饮食计划，查看趋势，并估算能量消耗与缺口。
+
+主要特点：
+- Kotlin、Jetpack Compose、MVVM、Room、DataStore、WorkManager
+- 身体数据、食品、饮食和计划默认保存在设备本地
+- 自定义食品、每日营养目标、碳循环与多种宏量分配规则
+- 运动消耗、食品搭配建议、多指标趋势和提醒
+- 内置离线中文 OCR，协助读取包装营养成分表；保存前由用户核对
+- 版本化备份与 Room Migration，支持保留旧版数据升级
+
+最低 Android 版本：Android 8.0（API 26）。
+
+营养、运动和热量结果均为估算，不能替代专业医疗建议。请阅读项目中的使用条款与隐私说明。
+```
+
+## 项目文件说明
+
+- `README.md`：面向使用者的项目功能、首次使用、安装和数据说明。
+- `GITHUB_TEXT_REVIEW.md`：待你审核的 About、Release 文案及需补全的信息。
+- `DEVELOPMENT.md`：完整技术说明、构建方法和历史功能说明。
+- `UPDATE_1.8.1.md`：1.8.1 图标更新与覆盖安装说明。
+- `UPDATE_1.8.md`：1.7 升级至 1.8 的用户公告。
+- `BUILD_STATUS.md`：当前版本构建、检查范围、数据库与签名核对报告。
+- `TERMS_AND_PRIVACY_1.8.md`：随软件提供的使用条款与隐私说明。
+- `artwork/launcher-icon-source.png`：当前应用图标原图，供项目首页预览。
+- `app/`：Android 应用源代码和测试。
+- `gradle/`、`gradlew`、`gradlew.bat`：Gradle Wrapper 和构建配置。
+- `.gitignore`：排除本地配置、构建输出、APK 和密钥文件。
+
+## 建议的公开步骤
+
+1. 打开 GitHub，建立一个新的空仓库。仓库名使用 `FitLedger`，是否公开选择 Public；创建仓库时可以先不自动生成 README、许可证或 `.gitignore`，因为项目里已有这些内容。
+2. 上传或推送本文件夹里的项目内容。不要上传它的上级 `outputs` 文件夹。
+3. 在仓库 **Settings / About** 中填写上面的简介和 Topics；如有公开下载页，再填 Website。
+4. 把 APK 放在 GitHub 的 **Releases** 附件中，不要提交到源码历史。当前图标更新的发布说明可采用 `UPDATE_1.8.1.md`；首次发布时也可附上 `UPDATE_1.8.md` 的功能介绍。
+5. 在仓库页面检查 README 的相对链接均能打开，并用无登录状态或另一账号查看公开页面。
+
+## 公开前检查
+
+- **核对说明中的发布信息。** `TERMS_AND_PRIVACY_1.8.md` 已按发布者提供的信息填写“猪肚鸡”和联系邮箱；正式发布时核对生效日期，并审阅说明内容。
+- **不要公开更新签名密钥或密码。** 更新签名私钥在项目目录之外；不要把上级 `outputs`、`private-signing`、个人数据备份、`local.properties`、`.gradle` 或 `build` 目录上传。`.gitignore` 已过滤常见敏感文件，但公开前仍要检查 GitHub 的待提交文件列表。
+- **许可证需要你决定。** 目前项目没有 `LICENSE` 文件。仅将仓库设为 Public 不会自动授予他人复制、修改、再发布或商用代码的权限。若你希望别人使用或修改源码，先选择合适的开源许可证并添加 `LICENSE`；若不希望授权复用，就不要添加开源许可证，并在 README 保留权利说明。第三方依赖继续受各自许可证约束。
+- APK 和源码是不同文件：APK 用于安装；GitHub 仓库提供源码。公开源码不会包含原更新签名私钥，其他人即使能编译 APK，也不能用新生成的签名覆盖你签发的正式安装。
+- 当前构建配置要求原更新签名密钥用于 debug 和 release 包的签名校验；这把密钥不能随公开仓库提供。因此，第三方不能直接用公开源码构建一个可覆盖官方安装的版本。若你希望社区可独立构建测试版，可另行设计独立的 debug 签名流程，但 release 仍必须由你用原密钥签署。
+- 公开前再次核对 APK 版本、SHA-256、包名、签名和功能说明；1.8 报告记录的包名为 `com.fitledger`。不要在 GitHub Issue 或评论中公开用户的身体记录、备份文件或私人联系信息。
+- 如果将来加入账号、云同步、广告、在线 OCR、崩溃上报、付费或第三方数据传输，需先更新应用实现、隐私说明和用户告知，再公开新版本。
+
+## 建议的 Release 文案
+
+```text
+轻衡 1.8.1
+
+更新应用图标：采用已选定的第 5 张方案，结合参考角色、猪肚鸡汤与哑铃元素。
+
+保留 1.8 的首次使用须知与独立首次设置、肌肉量免填、直接添加三大营养素、食品代码分享，以及包装营养表离线识别。
+
+版本：1.8.1（versionCode 10）
+Android：最低 API 26
+安装包：FitLedger-v1.8.1-update.apk
+源码包：FitLedger-v1.8.1-source.zip
+数据库：Room v6；备份格式：v9；本次无新增 Migration
+
+升级前请在旧 App 导出备份。请直接覆盖安装，不要卸载旧 App，也不要清除应用数据。
+营养与能量结果为估算；OCR 结果请对照包装核对后再保存。
+详细说明：README.md、UPDATE_1.8.1.md、UPDATE_1.8.md、TERMS_AND_PRIVACY_1.8.md
+```
+
