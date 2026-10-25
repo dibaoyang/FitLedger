@@ -6,6 +6,48 @@ import java.time.LocalDate
 
 class Repository(private val db: LedgerDatabase) {
     val dao = db.dao()
+    suspend fun saveZone(zone:FoodZone) = db.withTransaction {
+        val normalized=zone.copy(name=zone.name.trim())
+        normalized.validate()
+        val existing=if(normalized.id!=0L) requireNotNull(dao.zone(normalized.id)) {"分区已删除，请重新添加分区"} else null
+        dao.saveZone(normalized.copy(sortOrder=existing?.sortOrder?:nextTopLevelOrder()))
+    }
+    suspend fun deleteZone(id:Long) = db.withTransaction {
+        requireNotNull(dao.zone(id)) {"分区不存在"}
+        val foods=dao.allFoods()
+        val moved=foods.filter {it.zoneId==id && !it.isDeleted}.sortedWith(compareBy<Food> {it.sortOrder}.thenBy {it.name}.thenBy {it.id})
+        val maxOther=(dao.allZones().filter {it.id!=id}.map {it.sortOrder}+foods.filter {it.zoneId==null && !it.isDeleted}.map {it.sortOrder}).maxOrNull()?:-1L
+        require(maxOther<=Long.MAX_VALUE-moved.size) {"排序值已达上限，请调整一次顺序后重试"}
+        // Include soft-deleted foods so complete backups never retain a dangling zone reference.
+        dao.unassignZone(id)
+        moved.forEachIndexed {index,food ->check(dao.setFoodSortOrder(food.id,maxOther+index+1L)==1)}
+        check(dao.deleteZone(id)==1)
+    }
+    private suspend fun nextTopLevelOrder():Long {
+        val maximum=(dao.allZones().map {it.sortOrder}+dao.allFoods().filter {it.zoneId==null && !it.isDeleted}.map {it.sortOrder}).maxOrNull()?:-1L
+        require(maximum<Long.MAX_VALUE) {"排序值已达上限，请调整一次顺序后重试"}
+        return maximum+1
+    }
+    private suspend fun nextZoneOrder(zoneId:Long):Long {
+        val maximum=dao.allFoods().filter {it.zoneId==zoneId && !it.isDeleted}.maxOfOrNull {it.sortOrder}?:-1L
+        require(maximum<Long.MAX_VALUE) {"排序值已达上限，请调整一次顺序后重试"}
+        return maximum+1
+    }
+    suspend fun reorderLibrary(keys:List<String>)=db.withTransaction {
+        val expected=dao.allZones().map {"zone:${it.id}"}.toSet()+dao.allFoods().filter {it.zoneId==null && !it.isDeleted}.map {"food:${it.id}"}
+        require(keys.size==keys.distinct().size && keys.size==expected.size && keys.toSet()==expected) {"食品或分区已变化，请刷新后重新排序"}
+        keys.forEachIndexed {index,key ->
+            val id=key.substringAfter(':').toLong()
+            val updated=if(key.startsWith("zone:")) dao.setZoneSortOrder(id,index.toLong()) else dao.setFoodSortOrder(id,index.toLong())
+            check(updated==1)
+        }
+    }
+    suspend fun reorderZone(zoneId:Long,foodIds:List<Long>)=db.withTransaction {
+        requireNotNull(dao.zone(zoneId)) {"分区已删除，请刷新后重新排序"}
+        val expected=dao.allFoods().filter {it.zoneId==zoneId && !it.isDeleted}.map {it.id}.toSet()
+        require(foodIds.size==foodIds.distinct().size && foodIds.size==expected.size && foodIds.toSet()==expected) {"分区食品已变化，请刷新后重新排序"}
+        foodIds.forEachIndexed {index,id ->check(dao.setFoodSortOrder(id,index.toLong())==1)}
+    }
     suspend fun importFoodCode(code:String,allowed:Boolean) {
         val imported=FoodShareCodec.decode(code).copy(allowed=allowed)
         // The codec never accepts sender IDs or deletion state; import always creates a new row.
@@ -14,11 +56,15 @@ class Repository(private val db: LedgerDatabase) {
     suspend fun saveFood(food: Food) = db.withTransaction {
         food.validate()
         require(food.id >= 0 && !food.isDeleted) { "食品已删除，请重新添加食品" }
-        if (food.id != 0L) {
+        food.zoneId?.let {requireNotNull(dao.zone(it)) {"食品分区已删除，请重新选择分区"}}
+        val existing=if (food.id != 0L) {
             val existing = requireNotNull(dao.food(food.id)) { "食品不存在，请重新添加食品" }
             require(!existing.isDeleted) { "食品已删除，请重新添加食品" }
-        }
-        dao.saveFood(food)
+            existing
+        } else null
+        val sortOrder=if(existing!=null && existing.zoneId==food.zoneId) existing.sortOrder
+            else food.zoneId?.let {nextZoneOrder(it)}?:nextTopLevelOrder()
+        dao.saveFood(food.copy(sortOrder=sortOrder))
     }
     suspend fun deleteFood(id: Long) = db.withTransaction {
         val food = requireNotNull(dao.food(id)) { "食品不存在" }
@@ -90,14 +136,27 @@ class Repository(private val db: LedgerDatabase) {
         dao.completeSettings()
     }
     suspend fun exportBackup(preferences: Preferences): Backup = db.withTransaction {
-        Backup(bodies=dao.allBodies(), targets=dao.allTargets(), foods=dao.allFoods(), intakes=dao.allIntakes(), preferences=preferences,exercises=dao.allExercises())
+        val daily=db.dailyEatingDao()
+        Backup(bodies=dao.allBodies(), targets=dao.allTargets(), foods=dao.allFoods(), intakes=dao.allIntakes(), preferences=preferences,exercises=dao.allExercises(),zones=dao.allZones(),
+            dailyFoods=daily.allTemplates(),applications=daily.allApplications(),dayModes=daily.allDayModes())
     }
     suspend fun restoreBackup(backup: Backup) {
         backup.validate()
         db.withTransaction {
-            dao.clearExercisesForRestore(); dao.clearIntakesForRestore(); dao.clearTargetsForRestore(); dao.clearBodiesForRestore(); dao.clearFoodsForRestore()
+            val daily=db.dailyEatingDao()
+            daily.clearApplicationsForRestore();daily.clearTemplatesForRestore();daily.clearDayModesForRestore()
+            dao.clearExercisesForRestore(); dao.clearIntakesForRestore(); dao.clearTargetsForRestore(); dao.clearBodiesForRestore(); dao.clearFoodsForRestore();dao.clearZonesForRestore()
             backup.bodies.forEach { dao.insertBody(it) }; backup.targets.forEach { dao.insertTarget(it) }
-            backup.exercises.forEach {dao.insertExercise(it)}; backup.foods.forEach { dao.saveFood(it) }; backup.intakes.forEach { dao.insertIntake(it) }
+            backup.exercises.forEach {dao.insertExercise(it)};backup.zones.forEach {dao.saveZone(it)}; backup.foods.forEach { dao.saveFood(it) }; backup.intakes.forEach { dao.insertIntake(it) }
+            backup.dailyFoods.forEach {daily.saveTemplate(it)};backup.applications.forEach {daily.insertApplication(it)};backup.dayModes.forEach {daily.saveDayMode(it)}
+            // Deleted templates leave execution markers. Never reuse one of those identities after restore.
+            val templateFloor=(backup.dailyFoods.map {it.id}+backup.applications.map {it.templateId}).maxOrNull()?:0L
+            val sqlite=db.openHelper.writableDatabase
+            sqlite.execSQL("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='daily_food_templates'",arrayOf(templateFloor))
+            sqlite.execSQL("INSERT INTO sqlite_sequence (name,seq) SELECT 'daily_food_templates',? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='daily_food_templates')",arrayOf(templateFloor))
+            val intakeFloor=(backup.intakes.map {it.id}+backup.applications.map {it.intakeId}).maxOrNull()?:0L
+            sqlite.execSQL("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='intakes'",arrayOf(intakeFloor))
+            sqlite.execSQL("INSERT INTO sqlite_sequence (name,seq) SELECT 'intakes',? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='intakes')",arrayOf(intakeFloor))
             dao.stageSettings(PendingSettings(payload=PreferencesCodec.encode(backup.preferences)))
         }
     }
@@ -112,10 +171,21 @@ class Repository(private val db: LedgerDatabase) {
         val target=TargetPlanning.create(plan,record,dao.allBodies(),dao.allTargets(),dao.allExercises())
         dao.insertBody(record)
         dao.insertTarget(target)
+        DailyEatingStore(db).apply(day)
+        Unit
     }
-    suspend fun record(day: Long, quantities: Map<Long, Double>, recommendation: Boolean = false) = db.withTransaction {
+    suspend fun record(day: Long, quantities: Map<Long, Double>, recommendation: Boolean = false,policy:RecommendationPolicy=RecommendationPolicy()) = db.withTransaction {
         require(day == LocalDate.now().toEpochDay()) { "日期已变化，请先记录今日身体数据" }
         require(dao.body(day) != null && dao.target(day) != null) { "请先完成今日身体数据" }
+        if(recommendation) require(db.dailyEatingDao().dayMode(day)?.isIndulgence!=true) {"放纵日已暂停智能推荐，可如实手动记录食品"}
+        if(recommendation) {
+            val foods=dao.allFoods();val zones=dao.allZones();val intakes=dao.allIntakes()
+            FoodZoneQuotas.validateRecommendation(quantities,foods,zones,intakes,day)
+            val today=intakes.filter {it.day==day}
+            val consumed=today.fold(Nutrition()) {sum,intake->sum+intake.nutrition}
+            Recommender.validateProposal(foods.map {it.candidate()},requireNotNull(dao.target(day)).nutrition-consumed,quantities,
+                FoodZoneQuotas.limits(zones,foods,intakes,day),policy,spentYuan(today))
+        }
         quantities.forEach { (id, quantity) ->
             require(quantity.isFinite() && quantity > 0) { "摄入量须大于 0" }
             val food = requireNotNull(dao.food(id)) { "食品不存在" }
@@ -124,14 +194,33 @@ class Repository(private val db: LedgerDatabase) {
                 require(food.allowed && quantity <= food.maximum + 1e-6) { "食品推荐设置已变化，请重新推荐" }
                 require(kotlin.math.abs(quantity/food.step-kotlin.math.round(quantity/food.step)) < 1e-5) { "推荐调整单位已变化" }
             }
-            dao.insertIntake(Intake(day=day, foodId=id, name=food.name, unit=food.unit, quantity=quantity, nutrition=food.nutrition*(quantity/food.basisAmount)))
+            val cost=FoodPricing.cost(food.pricePerUnitYuan,quantity)
+            val snapshot=food.nutrition*(quantity/food.basisAmount)
+            require(snapshot.values().all {it.isFinite() && it>=0} && snapshot.kcal>0) {"摄入营养超出计算范围，请核对数量和食品标注基准"}
+            dao.insertIntake(Intake(day=day, foodId=id, name=food.name, unit=food.unit, quantity=quantity, nutrition=snapshot,costYuan=cost))
         }
+    }
+    suspend fun recommend(day:Long,locks:Map<Long,Double>,policy:RecommendationPolicy=RecommendationPolicy(),preferValue:Boolean=false):Suggestion = db.withTransaction {
+        require(day==LocalDate.now().toEpochDay()) {"日期已变化，请先记录今日身体数据"}
+        requireNotNull(dao.body(day)) {"请先完成今日身体数据"}
+        val target=requireNotNull(dao.target(day)) {"请先生成今日目标"}
+        require(db.dailyEatingDao().dayMode(day)?.isIndulgence!=true) {"放纵日已暂停智能推荐，可如实手动记录食品"}
+        val foods=dao.allFoods()
+        val intakes=dao.allIntakes()
+        val consumed=intakes.filter {it.day==day}.fold(Nutrition()) {sum,intake ->sum+intake.nutrition}
+        val remaining=target.nutrition-consumed
+        Recommender.recommend(foods.map {it.candidate()},remaining,locks,FoodZoneQuotas.limits(dao.allZones(),foods,intakes,day),policy,spentYuan(intakes.filter {it.day==day}),preferValue)
+    }
+    private fun spentYuan(intakes:List<Intake>):Double? {
+        if(intakes.any {it.costYuan==null}) return null
+        return intakes.sumOf {requireNotNull(it.costYuan)}.also {require(it.isFinite() && it>=0) {"今日已记录费用超出计算范围"}}
     }
     suspend fun recordNutrition(day:Long,nutrition:Nutrition)=db.withTransaction {
         require(day==LocalDate.now().toEpochDay()) { "日期已变化，请重新填写今日营养" }
         require(dao.body(day)!=null && dao.target(day)!=null) { "请先完成今日身体数据" }
         val snapshot=DirectNutrition.calculate(nutrition.carbs,nutrition.protein,nutrition.fat)
         dao.insertIntake(Intake(day=day,foodId=null,name="直接添加营养",unit="次",quantity=1.0,nutrition=snapshot,source="DIRECT"))
+        Unit
     }
     suspend fun remove(day: Long, id: Long) {
         require(day == LocalDate.now().toEpochDay() && dao.body(day) != null) { "仅能删除今日摄入" }

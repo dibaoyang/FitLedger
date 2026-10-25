@@ -10,8 +10,8 @@ import java.sql.Connection
 import java.sql.DriverManager
 
 class FeatureMigrationTest {
-    @Test fun everyReleasedSchemaUpgradesToSixWithoutChangingHistoricalValues() {
-        for(version in 1..5) DriverManager.getConnection("jdbc:sqlite::memory:").use {c ->
+    @Test fun everyReleasedSchemaUpgradesToSevenWithoutChangingHistoricalValues() {
+        for(version in 1..6) DriverManager.getConnection("jdbc:sqlite::memory:").use {c ->
             create(c,version)
             c.createStatement().use {s ->
                 s.execute("INSERT INTO bodies (day,weight,fatPercent,lean,muscle) VALUES (20000,72.4,15.2,61.3952,58.1)")
@@ -20,9 +20,14 @@ class FeatureMigrationTest {
                 if(version>=2) s.execute("UPDATE foods SET energyInputUnit='KJ'")
                 if(version>=5) s.execute("UPDATE foods SET isDeleted=1")
                 s.execute("INSERT INTO targets VALUES (20000,2000,250,120,57.77,'exact historical plan JSON')")
-                s.execute("INSERT INTO intakes VALUES (9,20000,7,'原食品名称','g',200,232,52,5.2,0.6)")
-                s.execute("INSERT INTO intakes VALUES (100,20000,7,'删除过的摄入','g',100,116,26,2.6,0.3)")
+                s.execute("INSERT INTO intakes (id,day,foodId,name,unit,quantity,kcal,carbs,protein,fat) VALUES (9,20000,7,'原食品名称','g',200,232,52,5.2,0.6)")
+                s.execute("INSERT INTO intakes (id,day,foodId,name,unit,quantity,kcal,carbs,protein,fat) VALUES (100,20000,7,'删除过的摄入','g',100,116,26,2.6,0.3)")
                 s.execute("DELETE FROM intakes WHERE id=100")
+                if(version>=6) {
+                    s.execute("INSERT INTO bodies (day,weight,fatPercent,lean,muscle) VALUES (19999,72.4,15.2,61.3952,NULL)")
+                    s.execute("INSERT INTO targets VALUES (19999,2000,250,120,57.77,'other original plan')")
+                    s.execute("INSERT INTO intakes (id,day,foodId,name,unit,quantity,kcal,carbs,protein,fat,source) VALUES (10,19999,NULL,'直接添加营养','次',1,590,100,25,10,'DIRECT')")
+                }
                 if(version>=2) s.execute("INSERT INTO pending_settings VALUES (1,'exact old settings journal')")
                 if(version>=4) s.execute("INSERT INTO exercises VALUES (3,20000,'MANUAL',NULL,NULL,NULL,300,1)")
             }
@@ -34,10 +39,17 @@ class FeatureMigrationTest {
                 val actual=rows(c,table)
                 assertEquals("v$version $table",records,if(oldColumns==null) actual else actual.map {it.filterKeys {k->k in oldColumns}})
             }
-            assertEquals("58.1",rows(c,"bodies").single()["muscle"])
-            assertEquals("FOOD",rows(c,"intakes").single()["source"])
+            assertEquals("58.1",rows(c,"bodies").first {it["day"]=="20000"}["muscle"])
+            assertEquals("FOOD",rows(c,"intakes").first {it["id"]=="9"}["source"])
+            assertTrue(rows(c,"food_zones").isEmpty())
+            assertNull(rows(c,"foods").single()["zoneId"])
+            assertEquals("1.0",rows(c,"foods").single()["zonePortionSize"])
+            assertEquals("0",rows(c,"foods").single()["sortOrder"])
+            assertEquals("",rows(c,"foods").single()["nutritionTags"])
+            assertNull(rows(c,"foods").single()["pricePerUnitYuan"])
+            assertTrue(rows(c,"intakes").all {it["costYuan"]==null})
             DriverManager.getConnection("jdbc:sqlite::memory:").use {fresh ->
-                create(fresh,6)
+                create(fresh,7)
                 assertEquals(tables(fresh),tables(c))
                 tables(fresh).forEach {assertEquals("v$version schema $it",columns(fresh,it),columns(c,it))}
                 assertEquals(indexes(fresh),indexes(c))

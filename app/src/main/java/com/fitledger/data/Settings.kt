@@ -47,7 +47,8 @@ data class Preferences(
     val energyUnit: EnergyUnit = EnergyUnit.KCAL, val nextPlan: Plan? = null, val effectiveFrom: Long? = null,
     val profile:BodyProfile?=null,val privacy:Boolean=false, val visibility:BodyVisibility=BodyVisibility.all(!privacy),
     val weightInputUnit: WeightUnit = WeightUnit.KG, val weightFoodShortcut: Boolean = true,
-    val hasReadIntro: Boolean = false, val skipMuscleInput: Boolean = false
+    val hasReadIntro: Boolean = false, val skipMuscleInput: Boolean = false,
+    val recommendationPolicy: RecommendationPolicy = RecommendationPolicy()
 ) {
     fun planFor(day: Long): Plan = if(nextPlan != null && effectiveFrom != null && day >= effectiveFrom) nextPlan else plan
     val editablePlan get() = nextPlan ?: plan
@@ -60,6 +61,7 @@ object PreferencesCodec {
         p.profile?.let {put("profile",ProfileCodec.encode(it))};put("privacy",p.privacy);put("visibility",VisibilityCodec.encode(p.visibility))
         put("weightInputUnit",p.weightInputUnit.name);put("weightFoodShortcut",p.weightFoodShortcut)
         put("hasReadIntro",p.hasReadIntro);put("skipMuscleInput",p.skipMuscleInput)
+        put("recommendationPolicy",RecommendationPolicyCodec.encode(p.recommendationPolicy))
     }.toString()
     fun decode(text: String): Preferences = JSONObject(text).let { j ->
         val p = Preferences(PlanCodec.decode(j.getJSONObject("plan").toString()), j.getBoolean("reminder"),j.getInt("hour"),j.getInt("minute"),
@@ -68,7 +70,11 @@ object PreferencesCodec {
             if(j.has("nextPlan")) j.getLong("effectiveFrom") else null,
             j.optJSONObject("profile")?.let(ProfileCodec::decode),j.optBoolean("privacy",false),VisibilityCodec.decode(j.optJSONObject("visibility"),j.optBoolean("privacy",false)),
             WeightUnit.valueOf(j.optString("weightInputUnit","KG")),j.optBoolean("weightFoodShortcut",true),
-            optionalBoolean(j,"hasReadIntro"),optionalBoolean(j,"skipMuscleInput"))
+            optionalBoolean(j,"hasReadIntro"),optionalBoolean(j,"skipMuscleInput"),
+            if(j.has("recommendationPolicy")) {
+                require(j.get("recommendationPolicy") is JSONObject) { "推荐约束设置的格式无效" }
+                RecommendationPolicyCodec.decode(j.getJSONObject("recommendationPolicy"))
+            } else RecommendationPolicy())
         require(p.hour in 0..23 && p.minute in 0..59) { "备份中的提醒时间无效" }
         p
     }
@@ -89,6 +95,7 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
     private val weightFoodShortcutKey = booleanPreferencesKey("weight_food_shortcut")
     private val hasReadIntroKey = booleanPreferencesKey("has_read_intro")
     private val skipMuscleInputKey = booleanPreferencesKey("skip_muscle_input")
+    private val recommendationPolicyKey = stringPreferencesKey("recommendation_policy")
     private val nextPlanKey = stringPreferencesKey("next_plan")
     private val effectiveKey = longPreferencesKey("plan_effective_day")
     private val profileKey=stringPreferencesKey("body_profile")
@@ -97,7 +104,8 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
         p[energyKey]?.let(EnergyUnit::valueOf) ?: EnergyUnit.KCAL, p[nextPlanKey]?.let(PlanCodec::decode), p[effectiveKey],
         p[profileKey]?.let {ProfileCodec.decode(JSONObject(it))},p[privacyKey] ?: false,VisibilityMigration.read(p),
         p[weightInputUnitKey]?.let(WeightUnit::valueOf) ?: WeightUnit.KG,p[weightFoodShortcutKey] ?: true,
-        p[hasReadIntroKey] ?: false,p[skipMuscleInputKey] ?: false) }
+        p[hasReadIntroKey] ?: false,p[skipMuscleInputKey] ?: false,
+        p[recommendationPolicyKey]?.let {RecommendationPolicyCodec.decode(it)} ?: RecommendationPolicy()) }
     suspend fun savePlan(plan: Plan, day: Long = java.time.LocalDate.now().toEpochDay(),profile:BodyProfile?=null) {
         // Materialize the currently effective plan, then schedule the replacement for tomorrow.
         store.edit { p ->
@@ -114,6 +122,10 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
     suspend fun setWeightFoodShortcut(enabled: Boolean) { store.edit { it[weightFoodShortcutKey]=enabled } }
     suspend fun markIntroRead() { store.edit { it[hasReadIntroKey]=true } }
     suspend fun setSkipMuscleInput(enabled:Boolean) { store.edit { it[skipMuscleInputKey]=enabled } }
+    suspend fun setRecommendationPolicy(policy:RecommendationPolicy) {
+        val encoded=RecommendationPolicyCodec.encode(policy).toString()
+        store.edit {it[recommendationPolicyKey]=encoded}
+    }
     suspend fun setVisibility(field:BodyField,show:Boolean) {store.edit {it[booleanPreferencesKey(field.key)]=show}}
     suspend fun setAllVisible(show:Boolean) {store.edit {p->BodyField.entries.forEach {p[booleanPreferencesKey(it.key)]=show}}}
     // Compatibility for existing callers; the UI uses individual fields.
@@ -135,6 +147,7 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
             // pre-upgrade pending-settings journal is restored. Never reset an acknowledged intro.
             it[hasReadIntroKey]=(it[hasReadIntroKey] ?: false) || p.hasReadIntro
             it[skipMuscleInputKey]=p.skipMuscleInput
+            it[recommendationPolicyKey]=RecommendationPolicyCodec.encode(p.recommendationPolicy).toString()
         }
     }
     suspend fun reminder(enabled: Boolean, hour: Int, minute: Int) {

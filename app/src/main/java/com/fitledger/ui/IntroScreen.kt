@@ -14,11 +14,12 @@ import androidx.compose.ui.unit.dp
     Text("控制饮食不需要用到的都可以乱填或者省略，包括肌肉量（肌肉的质量）等。")
     Text("用于计算的体重、体脂率、身高等请按真实情况填写，否则会影响结果；可省略的项目以表单提示为准。肌肉量可在设置中开启「省略肌肉量输入」。",style=MaterialTheme.typography.bodySmall)
 
-    Text("四个分区",style=MaterialTheme.typography.titleLarge)
+    Text("五个页面",style=MaterialTheme.typography.titleLarge)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             Text("今日 · 今天吃了什么\n记录当天食品，查看今日摄入、估算消耗、热量缺口及智能推荐。")
             Text("食品库 · 有哪些能吃\n添加自己的食品、营养信息和计量方式，决定哪些食品允许参与推荐。")
+            Text("每日吃的 · 固定要吃什么\n设置每天固定添加的食品和数量，称重后自动记录；今日仍可修改或删除。")
             Text("趋势 · 变化趋势\n查看身体与营养指标的历史变化，自选指标和 7／30／90 天范围。")
             Text("设置 · 计划改变\n调整饮食计划、身体资料和录入偏好，也可管理提醒、备份与恢复。")
         }

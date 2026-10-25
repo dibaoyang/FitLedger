@@ -42,7 +42,7 @@ class WeightPreferencesTest {
         assertEquals(60.0, restored.bodies.single().weight, 0.0)
         assertEquals(48.0, restored.bodies.single().lean, 0.0)
         assertEquals(60.0, restored.intakes.single().quantity, 0.0)
-        assertEquals(9, restored.backupVersion)
+        assertEquals(10, restored.backupVersion)
     }
 
     @Test fun legacySettingsAndPendingJournalDefaultToKgAndEnabled() {

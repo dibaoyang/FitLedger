@@ -4,7 +4,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 object Migrations {
-    const val DATABASE_VERSION = 6
+    const val DATABASE_VERSION = 7
     val MIGRATION_1_2 = object : Migration(1, 2) {
         override fun migrate(db: SupportSQLiteDatabase) {
             // No table recreation, no UPDATE of existing nutritional or historical values.
@@ -57,6 +57,22 @@ object Migrations {
             db.execSQL("CREATE INDEX index_intakes_day ON intakes (day)")
         }
     }
-    val ALL = arrayOf(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5,MIGRATION_5_6)
+    val MIGRATION_6_7=object:Migration(6,7) {
+        override fun migrate(db:SupportSQLiteDatabase) {
+            // New organizational settings only; measurements and intake/target snapshots stay untouched.
+            db.execSQL("CREATE TABLE IF NOT EXISTS food_zones (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, name TEXT NOT NULL, dailyMaximum REAL, recommendationMaximum REAL, sortOrder INTEGER NOT NULL DEFAULT 0)")
+            db.execSQL("ALTER TABLE foods ADD COLUMN zoneId INTEGER")
+            db.execSQL("ALTER TABLE foods ADD COLUMN zonePortionSize REAL NOT NULL DEFAULT 1.0")
+            db.execSQL("ALTER TABLE foods ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE foods ADD COLUMN nutritionTags TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE foods ADD COLUMN pricePerUnitYuan REAL")
+            db.execSQL("ALTER TABLE intakes ADD COLUMN costYuan REAL")
+            db.execSQL("CREATE TABLE IF NOT EXISTS daily_food_templates (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, foodId INTEGER NOT NULL, unit TEXT NOT NULL, mode TEXT NOT NULL, quantity REAL NOT NULL, enabled INTEGER NOT NULL, startDay INTEGER NOT NULL)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS daily_food_applications (day INTEGER NOT NULL, templateId INTEGER NOT NULL, intakeId INTEGER NOT NULL, PRIMARY KEY(day,templateId))")
+            db.execSQL("CREATE UNIQUE INDEX index_daily_food_applications_intakeId ON daily_food_applications (intakeId)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS day_modes (day INTEGER NOT NULL, isIndulgence INTEGER NOT NULL, PRIMARY KEY(day))")
+        }
+    }
+    val ALL = arrayOf(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5,MIGRATION_5_6,MIGRATION_6_7)
 }
 

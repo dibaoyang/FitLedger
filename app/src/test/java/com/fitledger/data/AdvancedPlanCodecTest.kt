@@ -146,7 +146,7 @@ class AdvancedPlanCodecTest {
     }
 
     @Test fun rejectsFractionalStringAndFutureBackupVersionMetadata() {
-        for (value in listOf(8.5, "8", 10, JSONObject.NULL)) {
+        for (value in listOf(8.5, "8", 11, JSONObject.NULL)) {
             val root = JSONObject(BackupCodec.encode(backup())).put("backupVersion", value)
             assertTrue(runCatching { BackupCodec.decode(root.toString()) }.isFailure)
         }

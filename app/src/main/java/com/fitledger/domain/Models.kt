@@ -111,40 +111,121 @@ object TargetCalculator {
         return result
     }
 }
-data class Candidate(val id: Long, val name: String, val perUnit: Nutrition, val step: Double, val maximum: Double, val allowed: Boolean)
-data class Suggestion(val quantities: Map<Long, Double>, val nutrition: Nutrition, val score: Double)
+data class Candidate(
+    val id: Long, val name: String, val perUnit: Nutrition, val step: Double, val maximum: Double, val allowed: Boolean,
+    val zoneId: Long? = null, val zonePortionSize: Double = 1.0, val pricePerUnitYuan: Double? = null
+)
+/** Quantity available for this recommendation, after the caller deducts today's intake. */
+data class ZoneLimit(val zoneId: Long, val name: String, val maximumPortions: Double) {
+    init {
+        require(zoneId > 0 && name.isNotBlank()) { "食品分区无效" }
+        require(maximumPortions.isFinite() && maximumPortions >= 0) { "分区推荐剩余上限须为非负有限数" }
+    }
+}
+data class Suggestion(val quantities: Map<Long, Double>, val nutrition: Nutrition, val score: Double, val costYuan: Double? = null)
 object Recommender {
-    fun recommend(foods: List<Candidate>, remaining: Nutrition, locks: Map<Long, Double>): Suggestion {
+    fun recommend(
+        foods: List<Candidate>, remaining: Nutrition, locks: Map<Long, Double>, zoneLimits: List<ZoneLimit> = emptyList(),
+        policy: RecommendationPolicy = RecommendationPolicy(), spentYuan: Double? = 0.0, preferValue: Boolean = false
+    ): Suggestion {
+        policy.validate()
+        if (policy == RecommendationPolicy() && !preferValue) {
+            RecommendationSearch.validateInputs(foods, remaining, zoneLimits, policy, spentYuan)
+            val result = legacyRecommend(foods, remaining, locks, zoneLimits)
+            return result.copy(costYuan = RecommendationSearch.cost(foods, result.quantities))
+        }
+        return RecommendationSearch.recommend(foods, remaining, locks, zoneLimits, policy, spentYuan, preferValue)
+    }
+
+    /** Recheck the exact accepted quantities against current data; never silently adjust them. */
+    fun validateProposal(
+        foods: List<Candidate>, remaining: Nutrition, quantities: Map<Long, Double>, zoneLimits: List<ZoneLimit> = emptyList(),
+        policy: RecommendationPolicy = RecommendationPolicy(), spentYuan: Double? = 0.0
+    ) = RecommendationSearch.validateProposal(foods, remaining, quantities, zoneLimits, policy, spentYuan)
+
+    private fun legacyRecommend(foods: List<Candidate>, remaining: Nutrition, locks: Map<Long, Double>, zoneLimits: List<ZoneLimit>): Suggestion {
+        require(foods.map { it.id }.distinct().size == foods.size && foods.all { it.id > 0 }) { "推荐食品编号须为不重复的正数" }
+        require(zoneLimits.map { it.zoneId }.distinct().size == zoneLimits.size) { "食品分区上限不能重复" }
+        require(remaining.values().all { it.isFinite() }) { "剩余营养须为有限数" }
+        foods.forEach {
+            require(it.zoneId == null || it.zoneId > 0) { "食品分区编号无效" }
+            require(it.zonePortionSize.isFinite() && it.zonePortionSize > 0) { "食品分区每份数量须大于 0" }
+        }
         val eligible = foods.filter { it.allowed }.sortedBy { it.id }
+        val limits = zoneLimits.associateBy { it.zoneId }
         require(locks.keys.all { id -> eligible.any { it.id == id } }) { "锁定食品必须允许参与推荐" }
-        eligible.forEach { require(it.step.isFinite() && it.step > 0 && it.maximum.isFinite() && it.maximum >= it.step) }
+        eligible.forEach {
+            require(it.step.isFinite() && it.step > 0 && it.maximum.isFinite() && it.maximum >= it.step) { "食品推荐量或调整单位无效" }
+            require(it.maximum / it.step <= 2000) { "推荐最大量/调整单位不能超过 2000" }
+            require((it.maximum / it.zonePortionSize).isFinite()) { "食品分区每份数量过小" }
+            require(it.perUnit.values().all { value -> value.isFinite() && value >= 0 && (value * it.maximum).isFinite() }) { "食品推荐营养无效" }
+        }
         locks.forEach { (id, n) ->
             val f = eligible.first { it.id == id }
             require(n.isFinite() && n > 0 && n <= f.maximum && kotlin.math.abs(n/f.step-round(n/f.step)) < 0.00001) { "锁定量须符合调整单位，且不超过最大推荐量" }
         }
         val amounts = eligible.associate { it.id to (locks[it.id] ?: 0.0) }.toMutableMap()
+        fun withinZoneLimit(zoneId: Long?): Boolean {
+            val limit = limits[zoneId] ?: return true
+            return QuotaMath.within(eligible.filter { it.zoneId == zoneId }.sumOf { amounts.getValue(it.id) / it.zonePortionSize }, limit.maximumPortions)
+        }
+        zoneLimits.forEach { require(withinZoneLimit(it.zoneId)) { "锁定必吃食品超过“${it.name}”分区的剩余上限，请调整锁定量或分区设置" } }
         fun total() = eligible.fold(Nutrition()) { a, f -> a + f.perUnit * amounts.getValue(f.id) }
+        require(total().values().all { it.isFinite() }) { "锁定食品的营养总量超出可计算范围" }
         fun score(n: Nutrition): Double = n.values().zip(remaining.values()).mapIndexed { i, (a,b) ->
             val scale = max(kotlin.math.abs(b), if(i==0) 100.0 else 10.0)
-            val delta = (a-b)/scale
+            val delta = a/scale-b/scale
             delta*delta*(if(a>b) 1.5 else 1.0)
         }.sum()
         var best = score(total())
-        // Coordinate descent keeps locked amounts exact, respects discrete portions and upper bounds.
+        val unlocked = eligible.filter { it.id !in locks }
+        // Every candidate stays within both the individual maximum and the shared portion budget.
         repeat(30) {
             var changed = false
-            eligible.filter { it.id !in locks }.forEach { f ->
+            unlocked.forEach { f ->
                 var chosen = amounts.getValue(f.id)
                 val previous = chosen
                 val steps = kotlin.math.floor(f.maximum/f.step).toInt()
-                require(steps <= 2000) { "推荐最大量/调整单位不能超过 2000" }
                 for (i in 0..steps) {
                     amounts[f.id] = i*f.step
+                    if (amounts.getValue(f.id) > f.maximum || !withinZoneLimit(f.zoneId)) continue
                     val s = score(total())
                     if (s < best-1e-9) { best = s; chosen = i*f.step }
                 }
                 amounts[f.id] = chosen
                 changed = changed || chosen != previous
+            }
+            // A full shared budget can block a useful food swap. Exchange one discrete step
+            // while keeping exact locks untouched, then let the next coordinate pass refine it.
+            unlocked.filter { it.zoneId in limits }.groupBy { it.zoneId }.values.forEach { group ->
+                group.forEach { recipient ->
+                    group.filter { it.id != recipient.id }.forEach donorLoop@ { donor ->
+                        val oldRecipient = amounts.getValue(recipient.id)
+                        val oldDonor = amounts.getValue(donor.id)
+                        val nextRecipient = (round(oldRecipient / recipient.step) + 1) * recipient.step
+                        if (nextRecipient > recipient.maximum || oldDonor <= 0) return@donorLoop
+                        val limit = limits.getValue(recipient.zoneId!!).maximumPortions
+                        val others = eligible.filter { it.zoneId == recipient.zoneId && it.id != recipient.id && it.id != donor.id }
+                            .sumOf { amounts.getValue(it.id) / it.zonePortionSize }
+                        val donorBudget = (limit - others - nextRecipient / recipient.zonePortionSize) * donor.zonePortionSize
+                        if (donorBudget < 0) return@donorLoop
+                        var donorSteps = minOf(round(oldDonor / donor.step).toInt(), kotlin.math.floor(donorBudget / donor.step).toInt())
+                        amounts[recipient.id] = nextRecipient
+                        amounts[donor.id] = donorSteps * donor.step
+                        while (donorSteps > 0 && !withinZoneLimit(recipient.zoneId)) {
+                            donorSteps--
+                            amounts[donor.id] = donorSteps * donor.step
+                        }
+                        val s = if (withinZoneLimit(recipient.zoneId)) score(total()) else Double.POSITIVE_INFINITY
+                        if (s < best-1e-9) {
+                            best = s
+                            changed = true
+                        } else {
+                            amounts[recipient.id] = oldRecipient
+                            amounts[donor.id] = oldDonor
+                        }
+                    }
+                }
             }
             if(!changed) return Suggestion(amounts.filterValues { it > 0 }, total(), best)
         }

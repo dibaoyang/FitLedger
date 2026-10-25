@@ -6,6 +6,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class IntakeGroupsTest {
+    @Test fun recurringAndManualFoodShareOneSummaryWithoutLosingTheirSources() {
+        val manual=entry(1,100.0)
+        val routine=entry(2,60.0).copy(source="ROUTINE")
+        val direct=Intake(3,day,null,"直接添加营养","次",1.0,Nutrition(100.0,10.0,10.0,2.0),"DIRECT")
+        val grouped=groupIntakesForDay(listOf(manual,routine,direct),day)
+        assertEquals(2,grouped.size)
+        val food=grouped.single {it.key.foodId==7L}
+        assertEquals(160.0,food.quantity,0.0)
+        assertEquals(listOf("FOOD","ROUTINE"),food.entries.map {it.source})
+    }
     private val day=20000L
     private fun entry(id:Long,quantity:Double,food:Long=7,unit:String="g",name:String="土豆泥",date:Long=day,kcal:Double=quantity)=
         Intake(id,date,food,name,unit,quantity,Nutrition(kcal,quantity/5,quantity/10,quantity/20))

@@ -16,22 +16,29 @@ import java.io.File
 import kotlinx.coroutines.sync.withLock
 
 data class LedgerState(val bodies: List<BodyRecord> = emptyList(), val targets: List<DailyTarget> = emptyList(),
-    val foods: List<Food> = emptyList(), val intakes: List<Intake> = emptyList(), val preferences: Preferences = Preferences(), val loaded: Boolean = false, val exercises:List<Exercise> = emptyList())
+    val foods: List<Food> = emptyList(), val intakes: List<Intake> = emptyList(), val preferences: Preferences = Preferences(), val loaded: Boolean = false, val exercises:List<Exercise> = emptyList(),
+    val zones:List<FoodZone> = emptyList(),val allFoods:List<Food> = emptyList(),
+    val dailyFoods:List<DailyFoodTemplate> = emptyList(),val dailyApplications:List<DailyFoodApplication> = emptyList(),val dayModes:List<DayMode> = emptyList())
 class LedgerViewModel(application: Application): AndroidViewModel(application) {
     private val app = application as FitApp
     private val repo = app.repository
+    private val daily=DailyEatingStore(app.database)
     val today = MutableStateFlow(LocalDate.now().toEpochDay())
     val message = MutableStateFlow<String?>(null)
     val muscleOmittedNotice=MutableStateFlow<Long?>(null)
     val busy = MutableStateFlow(false)
     val suggestion = MutableStateFlow<Suggestion?>(null)
+    private var suggestionDay:Long?=null
     val dataReady=MutableStateFlow(false)
     val restorePreview=MutableStateFlow<Backup?>(null)
     private var restoreData:Backup?=null
     val state = flow {
-        app.prepareData(); dataReady.value=true
+        app.prepareData()
+        app.dataLock.withLock {daily.apply(today.value)}
+        dataReady.value=true
         val core=combine(repo.dao.bodies(), repo.dao.targets(), repo.dao.foods(), repo.dao.intakes(), app.settings.flow) { b,t,f,i,p -> LedgerState(b,t,f,i,p,true) }
-        emitAll(combine(core,repo.dao.exercises()) {s,e->s.copy(exercises=e)})
+        val library=combine(core,repo.dao.exercises(),repo.dao.zones(),repo.dao.allFoodsFlow()) {s,e,z,f->s.copy(exercises=e,zones=z,allFoods=f)}
+        emitAll(combine(library,daily.dao.templates(),daily.dao.applications(),daily.dao.dayModes()) {s,f,a,m->s.copy(dailyFoods=f,dailyApplications=a,dayModes=m)})
     }.retryWhen { error, _ -> message.value="读取失败：${error.message}。未清空任何数据。"; delay(5000);true }
         .stateIn(viewModelScope, SharingStarted.Eagerly, LedgerState())
     init { viewModelScope.launch { while(isActive) { refreshDate(); delay(1000) } } }
@@ -56,6 +63,22 @@ class LedgerViewModel(application: Application): AndroidViewModel(application) {
         repo.weigh(today.value,body,plan,requireNotNull(p.profile) {"请先补全并保存身体资料"},omitMuscle=p.skipMuscleInput)
     }
     fun saveFood(food: Food, onSaved: () -> Unit = {}) = action { repo.saveFood(food); suggestion.value = null; onSaved(); message.value = "食品已保存" }
+    fun saveZone(zone:FoodZone,onSaved:()->Unit={})=action {repo.saveZone(zone);suggestion.value=null;onSaved();message.value="分区已保存"}
+    fun deleteZone(id:Long)=action {repo.deleteZone(id);suggestion.value=null;message.value="分区已删除，食品保留并移至未分区"}
+    fun reorderLibrary(keys:List<String>)=action {repo.reorderLibrary(keys)}
+    fun reorderZone(id:Long,foodIds:List<Long>)=action {repo.reorderZone(id,foodIds)}
+    fun saveDailyFood(template:DailyFoodTemplate,onSaved:()->Unit={})=action {
+        val warnings=daily.saveTemplate(template,today.value);suggestion.value=null;onSaved()
+        message.value=warnings.takeIf {it.isNotEmpty()}?.joinToString("；") ?: "每日吃的已保存；已生成的摄入不变，未添加的今日项目会自动补记"
+    }
+    fun deleteDailyFood(id:Long)=action {daily.deleteTemplate(id);suggestion.value=null;message.value="每日设置已删除，今天和历史摄入保留"}
+    fun applyDailyFoods()=action {
+        val warnings=daily.apply(today.value);suggestion.value=null
+        message.value=warnings.takeIf {it.isNotEmpty()}?.joinToString("；") ?: "已检查今日固定食品；已经添加或手动删除的项目不会重复添加"
+    }
+    fun indulgence(day:Long,enabled:Boolean)=action {daily.setIndulgence(day,enabled);suggestion.value=null}
+    fun editQuantity(id:Long,quantity:Double)=action {daily.editIntakeQuantity(today.value,id,quantity);suggestion.value=null}
+    fun recommendationPolicy(policy:RecommendationPolicy)=action {app.settings.setRecommendationPolicy(policy);suggestion.value=null;message.value="推荐约束已保存，手动记录不受限制"}
     fun importFoodCode(code:String,allowed:Boolean,onSaved:()->Unit)=action {
         repo.importFoodCode(code,allowed);suggestion.value=null;onSaved();message.value="食品已添加，原有食品和饮食记录保持不变"
     }
@@ -173,15 +196,18 @@ class LedgerViewModel(application: Application): AndroidViewModel(application) {
         completeSettingsAndAwait();refreshDate();dataReady.value=true
         message.value="恢复完成。恢复前的数据副本可在数据管理中导出。提醒仍受系统通知权限控制。"
     }
-    fun recommend(locks: Map<Long,Double>) = action {
-        val s = state.value
-        val target = requireNotNull(s.targets.find { it.day == today.value }) { "请先称重" }
-        val consumed = s.intakes.filter { it.day == today.value }.fold(Nutrition()) { a,i -> a+i.nutrition }
-        suggestion.value = withContext(Dispatchers.Default) { Recommender.recommend(s.foods.map { it.candidate() }, target.nutrition-consumed, locks) }
+    fun recommend(locks: Map<Long,Double>,preferValue:Boolean=false) = action {
+        suggestion.value=null
+        val calculationDay=today.value
+        val policy=app.settings.flow.first().recommendationPolicy
+        val result=withContext(Dispatchers.Default) {repo.recommend(calculationDay,locks,policy,preferValue)}
+        require(calculationDay==LocalDate.now().toEpochDay() && today.value==calculationDay) {"日期已变化，请重新计算今日搭配"}
+        suggestionDay=calculationDay;suggestion.value=result
     }
     fun adopt() = action {
         val value = requireNotNull(suggestion.value)
-        repo.record(today.value, value.quantities, true); suggestion.value = null
+        require(suggestionDay==today.value && today.value==LocalDate.now().toEpochDay()) {"日期已变化，请重新计算搭配"}
+        repo.record(today.value, value.quantities, true,app.settings.flow.first().recommendationPolicy); suggestion.value = null
     }
     fun reminder(enabled: Boolean, hour: Int, minute: Int) = action {
         app.settings.reminder(enabled,hour,minute)

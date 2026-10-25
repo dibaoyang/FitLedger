@@ -13,6 +13,6 @@ data class IntakeGroup(val key:IntakeGroupKey,val entries:List<Intake>) {
 }
 fun groupIntakesForDay(entries:List<Intake>,day:Long):List<IntakeGroup> = entries
     .filter {it.day==day}
-    .groupBy {IntakeGroupKey(it.foodId,it.unit,it.source)}
+    .groupBy {IntakeGroupKey(it.foodId,it.unit,if(it.source=="ROUTINE") "FOOD" else it.source)}
     .map {(key,records)->IntakeGroup(key,records.sortedBy {it.id})}
     .sortedByDescending {it.entries.last().id}

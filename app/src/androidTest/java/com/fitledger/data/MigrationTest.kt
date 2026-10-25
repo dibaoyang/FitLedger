@@ -19,7 +19,7 @@ class MigrationTest {
             execSQL("INSERT INTO intakes (id,day,foodId,name,unit,quantity,kcal,carbs,protein,fat) VALUES (9,20000,7,'米饭','g',200,232,52,5.2,0.6)")
             close()
         }
-        helper.runMigrationsAndValidate("migration-test",6,true,*Migrations.ALL).apply {
+        helper.runMigrationsAndValidate("migration-test",7,true,*Migrations.ALL).apply {
             query("SELECT kcal,energyInputUnit FROM foods WHERE id=7").use {assertTrue(it.moveToFirst());assertEquals(116.0,it.getDouble(0),0.0);assertEquals("KCAL",it.getString(1))}
             query("SELECT lean FROM bodies WHERE day=20000").use {assertTrue(it.moveToFirst());assertEquals(61.3952,it.getDouble(0),0.0)}
             query("SELECT planSnapshot FROM targets WHERE day=20000").use {assertTrue(it.moveToFirst());assertEquals("original-plan-snapshot",it.getString(0))}
@@ -91,6 +91,43 @@ class MigrationTest {
             execSQL("INSERT INTO bodies (day,weight,fatPercent,lean,muscle) VALUES (20001,72.4,15.2,61.3952,NULL)")
             execSQL("INSERT INTO intakes (day,foodId,name,unit,quantity,kcal,carbs,protein,fat,source) VALUES (20001,NULL,'直接添加营养','次',1,590,100,25,10,'DIRECT')")
             query("SELECT muscle FROM bodies WHERE day=20001").use {assertTrue(it.moveToFirst());assertTrue(it.isNull(0))}
+            close()
+        }
+    }
+    @Test fun v6UpgradeAddsEmptyZonesWithoutChangingAnyExistingSnapshotsOrSettings() {
+        helper.createDatabase("migration-v6-zones",6).apply {
+            execSQL("INSERT INTO bodies VALUES (20000,72.4,15.2,61.3952,NULL,21,175,'MALE',12000,1.55,1700,2635)")
+            execSQL("INSERT INTO foods VALUES (7,'rice','g',100,116,26,2.6,0.3,10,500,1,'KJ',1)")
+            execSQL("INSERT INTO targets VALUES (20000,2000,250,120,57.77,'original-plan')")
+            execSQL("INSERT INTO intakes VALUES (9,20000,7,'old-rice-name','g',200,232,52,5.2,0.6,'FOOD')")
+            execSQL("INSERT INTO intakes VALUES (10,20000,NULL,'直接添加营养','次',1,590,100,25,10,'DIRECT')")
+            execSQL("INSERT INTO exercises VALUES (3,20000,'MANUAL',NULL,NULL,NULL,300,1)")
+            execSQL("INSERT INTO pending_settings VALUES (1,'exact old pending settings')")
+            close()
+        }
+        helper.runMigrationsAndValidate("migration-v6-zones",7,true,Migrations.MIGRATION_6_7).apply {
+            query("SELECT zoneId,zonePortionSize,isDeleted,energyInputUnit,kcal,nutritionTags,pricePerUnitYuan,sortOrder FROM foods WHERE id=7").use {
+                assertTrue(it.moveToFirst());assertTrue(it.isNull(0));assertEquals(1.0,it.getDouble(1),0.0)
+                assertEquals(1,it.getInt(2));assertEquals("KJ",it.getString(3));assertEquals(116.0,it.getDouble(4),0.0)
+                assertEquals("",it.getString(5));assertTrue(it.isNull(6));assertEquals(0L,it.getLong(7))
+            }
+            query("SELECT muscle,lean,energy_bmrKcal FROM bodies").use {
+                assertTrue(it.moveToFirst());assertTrue(it.isNull(0));assertEquals(61.3952,it.getDouble(1),0.0);assertEquals(1700.0,it.getDouble(2),0.0)
+            }
+            query("SELECT foodId,kcal,source FROM intakes WHERE id=9").use {
+                assertTrue(it.moveToFirst());assertEquals(7L,it.getLong(0));assertEquals(232.0,it.getDouble(1),0.0);assertEquals("FOOD",it.getString(2))
+            }
+            query("SELECT foodId,kcal,source FROM intakes WHERE id=10").use {
+                assertTrue(it.moveToFirst());assertTrue(it.isNull(0));assertEquals(590.0,it.getDouble(1),0.0);assertEquals("DIRECT",it.getString(2))
+            }
+            query("SELECT planSnapshot FROM targets").use {assertTrue(it.moveToFirst());assertEquals("original-plan",it.getString(0))}
+            query("SELECT kcal FROM exercises").use {assertTrue(it.moveToFirst());assertEquals(300.0,it.getDouble(0),0.0)}
+            query("SELECT payload FROM pending_settings").use {assertTrue(it.moveToFirst());assertEquals("exact old pending settings",it.getString(0))}
+            query("SELECT COUNT(*) FROM food_zones").use {assertTrue(it.moveToFirst());assertEquals(0,it.getInt(0))}
+            query("SELECT COUNT(*) FROM intakes WHERE costYuan IS NOT NULL").use {assertTrue(it.moveToFirst());assertEquals(0,it.getInt(0))}
+            for(table in listOf("daily_food_templates","daily_food_applications","day_modes")) {
+                query("SELECT COUNT(*) FROM $table").use {assertTrue(it.moveToFirst());assertEquals(0,it.getInt(0))}
+            }
             close()
         }
     }

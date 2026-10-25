@@ -34,6 +34,7 @@ import com.fitledger.data.FoodShareCodec
     OutlinedButton(onClick={shown=!shown},enabled=!busy) {Text(if(shown) "收起食品代码" else "填写食品代码")}
     if(shown) Card(Modifier.fillMaxWidth()) {Column(Modifier.padding(12.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
         Text("粘贴朋友分享的 FITFOOD1 食品代码，先预览，确认后加入自己的食品库。")
+        Text("分享码继续兼容旧版本，只含食品营养和推荐参数；自己的价格、分区和排序请在添加后设置。")
         OutlinedTextField(code,::changeCode,label={Text("食品代码")},modifier=Modifier.fillMaxWidth(),minLines=2,maxLines=4,
             enabled=!busy,isError=error!=null)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {

@@ -34,6 +34,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
     var todayOnlyConfirmation by remember {mutableStateOf<Triple<Plan,Long,BodyProfile>?>(null)}
     val state by vm.state.collectAsStateWithLifecycle()
     val day by vm.today.collectAsStateWithLifecycle()
+    RecommendationSettingsSection(vm,p.recommendationPolicy,busy)
     Text("显示偏好",style=MaterialTheme.typography.titleLarge)
     Choice("默认热量单位",p.energyUnit,EnergyUnit.entries.toList(),{it.label}) {vm.energyUnit(it)}
     Text("首页、食品、推荐和趋势使用此单位显示；改变单位不会改变实际热量。")
@@ -187,6 +188,7 @@ private val metrics = listOf(
     Metric("估算实际热量差（总消耗−已记录摄入）","kcal",Color(0xFFA5496D)) {s,d->totalEnergy(s,d)?.let {energy->total(s,d)?.let {energy-it.kcal}}}
 )
 @Composable fun TrendsScreen(s: LedgerState,day: Long) {
+    TrendSummarySection(s,day)
     val energyUnit=LocalEnergyUnit.current
     var days by rememberSaveable {mutableIntStateOf(30)}
     var selected by rememberSaveable {mutableStateOf(listOf(0,1,2))}
