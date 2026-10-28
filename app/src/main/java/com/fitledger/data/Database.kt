@@ -12,10 +12,12 @@ data class DailyTarget(@PrimaryKey val day: Long, @Embedded val nutrition: Nutri
 @Entity(tableName = "food_zones")
 data class FoodZone(@PrimaryKey(autoGenerate = true) val id: Long = 0, val name: String,
     val dailyMaximum: Double? = null, val recommendationMaximum: Double? = null,
-    @ColumnInfo(defaultValue = "0") val sortOrder:Long = 0) {
+    @ColumnInfo(defaultValue = "0") val sortOrder:Long = 0,
+    @ColumnInfo(defaultValue = "'PORTION'") val limitUnit:String = "PORTION") {
     fun validate() {
         require(id >= 0 && name.isNotBlank() && name.length <= 100 && name.none { it.code < 32 }) { "请填写 100 字以内的分区名称" }
-        require(listOfNotNull(dailyMaximum,recommendationMaximum).all { it.isFinite() && it >= 0 }) { "分区上限须为不小于 0 的有效份数" }
+        require(limitUnit in setOf("PORTION","G")) {"分区上限单位无效"}
+        require(listOfNotNull(dailyMaximum,recommendationMaximum).all { it.isFinite() && it >= 0 }) { "分区上限须为不小于 0 的有效数量" }
         require(sortOrder>=0) {"分区排序无效"}
     }
 }
@@ -26,7 +28,8 @@ data class Food(@PrimaryKey(autoGenerate = true) val id: Long = 0, val name: Str
     @ColumnInfo(defaultValue = "0") val isDeleted: Boolean = false,
     val zoneId: Long? = null, @ColumnInfo(defaultValue = "1.0") val zonePortionSize: Double = 1.0,
     @ColumnInfo(defaultValue = "0") val sortOrder:Long = 0,
-    @ColumnInfo(defaultValue = "''") val nutritionTags:String = "", val pricePerUnitYuan:Double? = null) {
+    @ColumnInfo(defaultValue = "''") val nutritionTags:String = "", val pricePerUnitYuan:Double? = null,
+    val gramsPerPortion:Double? = null) {
     fun candidate() = Candidate(id, name, nutrition*(1/basisAmount), step, maximum, allowed && !isDeleted,zoneId,zonePortionSize,pricePerUnitYuan)
     fun validate() {
         require(name.isNotBlank()) { "请填写食品名称" }
@@ -37,6 +40,11 @@ data class Food(@PrimaryKey(autoGenerate = true) val id: Long = 0, val name: Str
         val tags=if(nutritionTags.isEmpty()) emptyList() else nutritionTags.split(',')
         require(tags.distinct().size==tags.size && tags.all {it in setOf("CARBS","PROTEIN","FAT")}) {"食品营养分区无效"}
         require(pricePerUnitYuan==null || (pricePerUnitYuan.isFinite() && pricePerUnitYuan>=0 && (pricePerUnitYuan*maximum).isFinite())) {"食品单价无效或最大推荐费用超出计算范围"}
+        require(gramsPerPortion==null || (gramsPerPortion.isFinite() && gramsPerPortion>0 &&
+            (1.0/gramsPerPortion).isFinite() && 1.0/gramsPerPortion>0 &&
+            (maximum*gramsPerPortion).isFinite() && (maximum/(1.0/gramsPerPortion)).isFinite())) {
+            "每份克重须大于 0，且能安全换算最大推荐量，请检查每份克重"
+        }
         require(zonePortionSize.isFinite() && zonePortionSize > 0) { "每分区份的食品数量须大于 0" }
         require(zoneId==null || (maximum/zonePortionSize).isFinite()) { "每分区份的食品数量过小，无法计算推荐量" }
         require(basisAmount.isFinite() && basisAmount > 0) { "营养标注基准量必须大于 0" }

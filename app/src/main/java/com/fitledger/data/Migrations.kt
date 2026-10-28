@@ -4,7 +4,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 object Migrations {
-    const val DATABASE_VERSION = 7
+    const val DATABASE_VERSION = 8
     val MIGRATION_1_2 = object : Migration(1, 2) {
         override fun migrate(db: SupportSQLiteDatabase) {
             // No table recreation, no UPDATE of existing nutritional or historical values.
@@ -73,6 +73,13 @@ object Migrations {
             db.execSQL("CREATE TABLE IF NOT EXISTS day_modes (day INTEGER NOT NULL, isIndulgence INTEGER NOT NULL, PRIMARY KEY(day))")
         }
     }
-    val ALL = arrayOf(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5,MIGRATION_5_6,MIGRATION_6_7)
+    val MIGRATION_7_8=object:Migration(7,8) {
+        override fun migrate(db:SupportSQLiteDatabase) {
+            // Existing limits remain portions; no amounts or historical snapshots are converted.
+            db.execSQL("ALTER TABLE food_zones ADD COLUMN limitUnit TEXT NOT NULL DEFAULT 'PORTION'")
+            db.execSQL("ALTER TABLE foods ADD COLUMN gramsPerPortion REAL")
+        }
+    }
+    val ALL = arrayOf(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5,MIGRATION_5_6,MIGRATION_6_7,MIGRATION_7_8)
 }
 

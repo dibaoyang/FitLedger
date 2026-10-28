@@ -14,13 +14,41 @@ class FoodZoneBackupTest {
         preferences=Preferences(hasReadIntro=true,energyUnit=EnergyUnit.KJ),
         zones=listOf(FoodZone(1,"面包",3.0,null,2),FoodZone(2,"不限量"),FoodZone(3,"暂不推荐",null,0.0)))
 
-    @Test fun versionTenRoundTripPreservesZonesConversionsSoftDeletionHistoryAndSettings() {
+    @Test fun versionElevenRoundTripPreservesZonesConversionsSoftDeletionHistoryAndSettings() {
         val original=fixture()
-        assertEquals(10,original.backupVersion);assertEquals(7,original.databaseVersion)
+        assertEquals(11,original.backupVersion);assertEquals(8,original.databaseVersion)
         assertEquals(original,BackupCodec.decode(BackupCodec.encode(original)))
         val data=JSONObject(JSONObject(BackupCodec.encode(original)).getString("payload"))
         assertTrue(data.getJSONArray("zones").getJSONObject(0).isNull("recommendationMaximum"))
         assertEquals(50.0,data.getJSONArray("foods").getJSONObject(0).getDouble("zonePortionSize"),0.0)
+    }
+    @Test fun gramQuotaRoundTripRetainsMixedUnitsAndDoesNotRewriteSnapshots() {
+        val original=fixture().copy(zones=fixture().zones.map {it.copy(limitUnit="G")},
+            foods=listOf(food.copy(unit="份",basisAmount=1.0,step=1.0,maximum=10.0,gramsPerPortion=45.0)))
+        val restored=BackupCodec.decode(BackupCodec.encode(original))
+        assertEquals(original,restored)
+        assertEquals(45.0,restored.foods.single().gramsPerPortion!!,0.0)
+        assertEquals(fixture().intakes,restored.intakes)
+        assertTrue(runCatching {original.copy(backupVersion=10).validate()}.isFailure)
+        assertTrue(runCatching {original.copy(databaseVersion=7).validate()}.isFailure)
+    }
+    @Test fun allTenPreviousFormatsDefaultNewFieldsWithoutGuessingGrams() {
+        for(version in 1..10) {
+            val root=JSONObject(BackupCodec.encode(fixture())).put("backupVersion",version).put("databaseVersion",7)
+            edit(root) {data ->
+                data.getJSONArray("foods").getJSONObject(0).remove("gramsPerPortion")
+                val zones=data.getJSONArray("zones")
+                for(i in 0 until zones.length()) zones.getJSONObject(i).remove("limitUnit")
+                if(version<10) {
+                    data.remove("zones")
+                    data.getJSONArray("foods").getJSONObject(0).apply {put("isDeleted",false);remove("zoneId");remove("zonePortionSize");remove("sortOrder")}
+                }
+            }
+            val restored=BackupCodec.decode(root.toString())
+            assertNull(restored.foods.single().gramsPerPortion)
+            assertTrue(restored.zones.all {it.limitUnit=="PORTION"})
+            assertEquals(fixture().intakes,restored.intakes)
+        }
     }
     @Test fun allNinePreviousFormatsRestoreAsUnassignedWithNoRecalculation() {
         val original=fixture().copy(zones=emptyList(),foods=listOf(food.copy(isDeleted=false,zoneId=null,zonePortionSize=1.0,sortOrder=0)))
@@ -65,6 +93,25 @@ class FoodZoneBackupTest {
         bad {it.getJSONArray("foods").getJSONObject(0).remove("sortOrder")}
         bad {it.getJSONArray("zones").getJSONObject(0).put("sortOrder",-1)}
         bad {it.getJSONArray("zones").getJSONObject(0).put("sortOrder",1.5)}
+        bad {it.getJSONArray("foods").getJSONObject(0).remove("gramsPerPortion")}
+        bad {it.getJSONArray("foods").getJSONObject(0).put("gramsPerPortion","45")}
+        bad {it.getJSONArray("foods").getJSONObject(0).put("gramsPerPortion",0)}
+        bad {it.getJSONArray("foods").getJSONObject(0).put("gramsPerPortion",-1)}
+        bad {it.getJSONArray("foods").getJSONObject(0).put("gramsPerPortion",1e-320)}
+        bad {it.getJSONArray("foods").getJSONObject(0).put("gramsPerPortion",1e308)}
+        bad {it.getJSONArray("zones").getJSONObject(0).remove("limitUnit")}
+        bad {it.getJSONArray("zones").getJSONObject(0).put("limitUnit",JSONObject.NULL)}
+        bad {it.getJSONArray("zones").getJSONObject(0).put("limitUnit",1)}
+        bad {it.getJSONArray("zones").getJSONObject(0).put("limitUnit","KG")}
+    }
+    @Test fun rejectsFutureVersionAndOldMetadataCannotHideGramFields() {
+        for(key in listOf("backupVersion","databaseVersion")) {
+            val root=JSONObject(BackupCodec.encode(fixture())).put(key,99)
+            assertTrue(runCatching {BackupCodec.decode(root.toString())}.isFailure)
+        }
+        val root=JSONObject(BackupCodec.encode(fixture())).put("backupVersion",10).put("databaseVersion",7)
+        edit(root) {it.getJSONArray("zones").getJSONObject(0).put("limitUnit","G")}
+        assertTrue(runCatching {BackupCodec.decode(root.toString())}.isFailure)
     }
     @Test fun foodShareCodesKeepNutritionButDoNotTransferPersonalZones() {
         val decoded=FoodShareCodec.decode(FoodShareCodec.encode(food.copy(isDeleted=false)))

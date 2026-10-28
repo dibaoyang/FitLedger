@@ -10,8 +10,8 @@ import java.sql.Connection
 import java.sql.DriverManager
 
 class FeatureMigrationTest {
-    @Test fun everyReleasedSchemaUpgradesToSevenWithoutChangingHistoricalValues() {
-        for(version in 1..6) DriverManager.getConnection("jdbc:sqlite::memory:").use {c ->
+    @Test fun everyReleasedSchemaUpgradesToEightWithoutChangingHistoricalValues() {
+        for(version in 1..7) DriverManager.getConnection("jdbc:sqlite::memory:").use {c ->
             create(c,version)
             c.createStatement().use {s ->
                 s.execute("INSERT INTO bodies (day,weight,fatPercent,lean,muscle) VALUES (20000,72.4,15.2,61.3952,58.1)")
@@ -30,6 +30,14 @@ class FeatureMigrationTest {
                 }
                 if(version>=2) s.execute("INSERT INTO pending_settings VALUES (1,'exact old settings journal')")
                 if(version>=4) s.execute("INSERT INTO exercises VALUES (3,20000,'MANUAL',NULL,NULL,NULL,300,1)")
+                if(version>=7) {
+                    s.execute("INSERT INTO food_zones VALUES (1,'旧分区',3.0,2.0,4)")
+                    s.execute("UPDATE foods SET zoneId=1,zonePortionSize=50.0,sortOrder=8,nutritionTags='CARBS,PROTEIN',pricePerUnitYuan=0.02")
+                    s.execute("UPDATE intakes SET costYuan=4.0,source='ROUTINE' WHERE id=9")
+                    s.execute("INSERT INTO daily_food_templates VALUES (4,7,'g','FIXED',20.0,1,20000)")
+                    s.execute("INSERT INTO daily_food_applications VALUES (20000,4,9)")
+                    s.execute("INSERT INTO day_modes VALUES (20000,1)")
+                }
             }
             val oldTables=tables(c)
             val before=oldTables.associateWith {rows(c,it)}
@@ -40,16 +48,23 @@ class FeatureMigrationTest {
                 assertEquals("v$version $table",records,if(oldColumns==null) actual else actual.map {it.filterKeys {k->k in oldColumns}})
             }
             assertEquals("58.1",rows(c,"bodies").first {it["day"]=="20000"}["muscle"])
-            assertEquals("FOOD",rows(c,"intakes").first {it["id"]=="9"}["source"])
-            assertTrue(rows(c,"food_zones").isEmpty())
-            assertNull(rows(c,"foods").single()["zoneId"])
-            assertEquals("1.0",rows(c,"foods").single()["zonePortionSize"])
-            assertEquals("0",rows(c,"foods").single()["sortOrder"])
-            assertEquals("",rows(c,"foods").single()["nutritionTags"])
-            assertNull(rows(c,"foods").single()["pricePerUnitYuan"])
-            assertTrue(rows(c,"intakes").all {it["costYuan"]==null})
+            assertEquals(if(version>=7) "ROUTINE" else "FOOD",rows(c,"intakes").first {it["id"]=="9"}["source"])
+            assertTrue(rows(c,"food_zones").all {it["limitUnit"]=="PORTION"})
+            assertNull(rows(c,"foods").single()["gramsPerPortion"])
+            if(version<7) {
+                assertTrue(rows(c,"food_zones").isEmpty())
+                assertNull(rows(c,"foods").single()["zoneId"])
+                assertEquals("1.0",rows(c,"foods").single()["zonePortionSize"])
+                assertEquals("0",rows(c,"foods").single()["sortOrder"])
+                assertEquals("",rows(c,"foods").single()["nutritionTags"])
+                assertNull(rows(c,"foods").single()["pricePerUnitYuan"])
+                assertTrue(rows(c,"intakes").all {it["costYuan"]==null})
+            } else {
+                assertEquals(setOf("gramsPerPortion"),rows(c,"foods").single().keys-before.getValue("foods").single().keys)
+                assertEquals(setOf("limitUnit"),rows(c,"food_zones").single().keys-before.getValue("food_zones").single().keys)
+            }
             DriverManager.getConnection("jdbc:sqlite::memory:").use {fresh ->
-                create(fresh,7)
+                create(fresh,8)
                 assertEquals(tables(fresh),tables(c))
                 tables(fresh).forEach {assertEquals("v$version schema $it",columns(fresh,it),columns(c,it))}
                 assertEquals(indexes(fresh),indexes(c))

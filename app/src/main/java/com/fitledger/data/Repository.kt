@@ -4,13 +4,19 @@ import androidx.room.withTransaction
 import com.fitledger.domain.*
 import java.time.LocalDate
 
+data class ZoneFoodAssignment(val foodId:Long,val zonePortionSize:Double,val gramsPerPortion:Double?)
+
 class Repository(private val db: LedgerDatabase) {
     val dao = db.dao()
     suspend fun saveZone(zone:FoodZone) = db.withTransaction {
         val normalized=zone.copy(name=zone.name.trim())
         normalized.validate()
         val existing=if(normalized.id!=0L) requireNotNull(dao.zone(normalized.id)) {"分区已删除，请重新添加分区"} else null
+        val members=dao.allFoods().filter {it.zoneId==normalized.id && !it.isDeleted}
+        require(members.all {FoodZoneQuotas.matchesUnit(it,normalized)}) {"分区只能加入按 ${FoodZoneQuotas.unitFor(normalized)} 记录的食品，请先移出其他单位食品"}
         dao.saveZone(normalized.copy(sortOrder=existing?.sortOrder?:nextTopLevelOrder()))
+        // Only an explicit zone save confirms native portion limits; ordinary food edits cannot.
+        members.filter {it.zonePortionSize!=1.0}.forEach {dao.saveFood(it.copy(zonePortionSize=1.0))}
     }
     suspend fun deleteZone(id:Long) = db.withTransaction {
         requireNotNull(dao.zone(id)) {"分区不存在"}
@@ -48,6 +54,44 @@ class Repository(private val db: LedgerDatabase) {
         require(foodIds.size==foodIds.distinct().size && foodIds.size==expected.size && foodIds.toSet()==expected) {"分区食品已变化，请刷新后重新排序"}
         foodIds.forEachIndexed {index,id ->check(dao.setFoodSortOrder(id,index.toLong())==1)}
     }
+    /** Re-read every row in one transaction so picker state cannot overwrite newer food edits. */
+    suspend fun assignFoodsToZone(zoneId:Long,assignments:List<ZoneFoodAssignment>)=db.withTransaction {
+        val zone=requireNotNull(dao.zone(zoneId)) {"食品分区已删除，请刷新后重新添加"}
+        zone.validate()
+        require(assignments.map {it.foodId}.distinct().size==assignments.size) {"所选食品重复，请重新选择"}
+        val foods=dao.allFoods()
+        val byId=foods.associateBy {it.id}
+        require(FoodZoneQuotas.zoneIssues(zone,foods).isEmpty()) {"本分区有旧单位或份数规则，请先核对分区上限并保存"}
+        val updates=assignments.mapNotNull {assignment ->
+            val food=requireNotNull(byId[assignment.foodId]) {"食品不存在，请刷新后重新选择"}
+            require(!food.isDeleted) {"食品已删除，请刷新后重新选择"}
+            require(FoodZoneQuotas.matchesUnit(food,zone)) {"「${zone.name}」只能加入按 ${FoodZoneQuotas.unitFor(zone)} 记录的食品"}
+            if(food.zoneId==zoneId) return@mapNotNull null
+            require(assignment.zonePortionSize==1.0) {"分区数量按食品的 g 或份直接累计，不使用换算"}
+            food.copy(zoneId=zoneId,zonePortionSize=1.0).also {
+                it.validate()
+                require(FoodZoneQuotas.quotaSize(it,zone)!=null) {"食品单位与分区不一致"}
+            }
+        }
+        val maximum=foods.filter {it.zoneId==zoneId && !it.isDeleted}.maxOfOrNull {it.sortOrder}?:-1L
+        require(maximum<=Long.MAX_VALUE-updates.size) {"排序值已达上限，请调整一次顺序后重试"}
+        updates.forEachIndexed {index,food ->dao.saveFood(food.copy(sortOrder=maximum+index+1L))}
+    }
+    /** Move selected members without changing any food/intake snapshots; all rows validate before writes. */
+    suspend fun removeFoodsFromZone(zoneId:Long,foodIds:List<Long>)=db.withTransaction {
+        requireNotNull(dao.zone(zoneId)) {"分区已删除，请刷新后重试"}
+        require(foodIds.size==foodIds.distinct().size) {"所选食品重复，请重新选择"}
+        val foods=dao.allFoods()
+        val byId=foods.associateBy {it.id}
+        val selected=foodIds.map {id->
+            requireNotNull(byId[id]) {"食品不存在，请刷新后重试"}.also {
+                require(!it.isDeleted && it.zoneId==zoneId) {"食品已删除或所属分区已变化，请刷新后重试"}
+            }
+        }
+        val maximum=(dao.allZones().map {it.sortOrder}+foods.filter {it.zoneId==null && !it.isDeleted}.map {it.sortOrder}).maxOrNull()?:-1L
+        require(maximum<=Long.MAX_VALUE-selected.size) {"排序值已达上限，请调整一次顺序后重试"}
+        selected.forEachIndexed {index,food->dao.saveFood(food.copy(zoneId=null,sortOrder=maximum+index+1L))}
+    }
     suspend fun importFoodCode(code:String,allowed:Boolean) {
         val imported=FoodShareCodec.decode(code).copy(allowed=allowed)
         // The codec never accepts sender IDs or deletion state; import always creates a new row.
@@ -62,6 +106,15 @@ class Repository(private val db: LedgerDatabase) {
             require(!existing.isDeleted) { "食品已删除，请重新添加食品" }
             existing
         } else null
+        food.zoneId?.let {id->
+            val zone=requireNotNull(dao.zone(id)) {"食品分区已删除，请重新选择分区"}
+            require(FoodZoneQuotas.matchesUnit(food,zone)) {"「${zone.name}」只能加入按 ${FoodZoneQuotas.unitFor(zone)} 记录的食品"}
+            require(zone.limitUnit!="PORTION" || food.zonePortionSize==1.0) {"请先到分区核对上限并保存，份数直接累计，不使用旧换算"}
+            require(existing==null || existing.zoneId!=id || zone.limitUnit!="PORTION" ||
+                (FoodZoneQuotas.matchesUnit(existing,zone) && existing.zonePortionSize==1.0)) {
+                "旧分区单位或份数规则尚未确认，请先到分区调整单位，或移出食品并确认上限"
+            }
+        }
         val sortOrder=if(existing!=null && existing.zoneId==food.zoneId) existing.sortOrder
             else food.zoneId?.let {nextZoneOrder(it)}?:nextTopLevelOrder()
         dao.saveFood(food.copy(sortOrder=sortOrder))
@@ -183,7 +236,7 @@ class Repository(private val db: LedgerDatabase) {
             FoodZoneQuotas.validateRecommendation(quantities,foods,zones,intakes,day)
             val today=intakes.filter {it.day==day}
             val consumed=today.fold(Nutrition()) {sum,intake->sum+intake.nutrition}
-            Recommender.validateProposal(foods.map {it.candidate()},requireNotNull(dao.target(day)).nutrition-consumed,quantities,
+            Recommender.validateProposal(FoodZoneQuotas.candidates(foods,zones),requireNotNull(dao.target(day)).nutrition-consumed,quantities,
                 FoodZoneQuotas.limits(zones,foods,intakes,day),policy,spentYuan(today))
         }
         quantities.forEach { (id, quantity) ->
@@ -209,7 +262,8 @@ class Repository(private val db: LedgerDatabase) {
         val intakes=dao.allIntakes()
         val consumed=intakes.filter {it.day==day}.fold(Nutrition()) {sum,intake ->sum+intake.nutrition}
         val remaining=target.nutrition-consumed
-        Recommender.recommend(foods.map {it.candidate()},remaining,locks,FoodZoneQuotas.limits(dao.allZones(),foods,intakes,day),policy,spentYuan(intakes.filter {it.day==day}),preferValue)
+        val zones=dao.allZones()
+        Recommender.recommend(FoodZoneQuotas.candidates(foods,zones),remaining,locks,FoodZoneQuotas.limits(zones,foods,intakes,day),policy,spentYuan(intakes.filter {it.day==day}),preferValue)
     }
     private fun spentYuan(intakes:List<Intake>):Double? {
         if(intakes.any {it.costYuan==null}) return null

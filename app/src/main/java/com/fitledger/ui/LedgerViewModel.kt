@@ -64,6 +64,16 @@ class LedgerViewModel(application: Application): AndroidViewModel(application) {
     }
     fun saveFood(food: Food, onSaved: () -> Unit = {}) = action { repo.saveFood(food); suggestion.value = null; onSaved(); message.value = "食品已保存" }
     fun saveZone(zone:FoodZone,onSaved:()->Unit={})=action {repo.saveZone(zone);suggestion.value=null;onSaved();message.value="分区已保存"}
+    fun assignFoodsToZone(zoneId:Long,assignments:List<ZoneFoodAssignment>,onSaved:()->Unit)=action {
+        repo.assignFoodsToZone(zoneId,assignments);suggestion.value=null
+        state.first {s->s.loaded && assignments.all {a->s.foods.any {it.id==a.foodId && it.zoneId==zoneId}}}
+        onSaved();message.value="食品已加入分区，营养、价格和历史摄入保持不变"
+    }
+    fun removeFoodsFromZone(zoneId:Long,foodIds:List<Long>,onSaved:()->Unit)=action {
+        repo.removeFoodsFromZone(zoneId,foodIds);suggestion.value=null
+        state.first {s->s.loaded && foodIds.all {id->s.foods.any {it.id==id && it.zoneId==null}}}
+        onSaved();message.value="食品已移至未分区，资料和历史摄入保留；请重新确认分区上限"
+    }
     fun deleteZone(id:Long)=action {repo.deleteZone(id);suggestion.value=null;message.value="分区已删除，食品保留并移至未分区"}
     fun reorderLibrary(keys:List<String>)=action {repo.reorderLibrary(keys)}
     fun reorderZone(id:Long,foodIds:List<Long>)=action {repo.reorderZone(id,foodIds)}

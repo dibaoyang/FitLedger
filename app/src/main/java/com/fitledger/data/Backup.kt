@@ -10,13 +10,14 @@ import java.time.LocalDate
 import kotlin.math.abs
 
 data class Backup(
-    val backupVersion: Int = 10, val databaseVersion: Int = Migrations.DATABASE_VERSION,
+    val backupVersion: Int = 11, val databaseVersion: Int = Migrations.DATABASE_VERSION,
     val exportTime: String = Instant.now().toString(), val appVersion: String = BuildConfig.VERSION_NAME,
     val bodies: List<BodyRecord>, val targets: List<DailyTarget>, val foods: List<Food>, val intakes: List<Intake>, val preferences: Preferences, val exercises:List<Exercise> = emptyList(), val zones:List<FoodZone> = emptyList(),
     val dailyFoods:List<DailyFoodTemplate> = emptyList(), val applications:List<DailyFoodApplication> = emptyList(), val dayModes:List<DayMode> = emptyList()
 ) {
     fun validate() {
-        require(backupVersion in 1..10 && databaseVersion in 1..Migrations.DATABASE_VERSION) { "不支持此备份版本，请使用兼容的新版本 App" }
+        require(backupVersion in 1..11 && databaseVersion in 1..Migrations.DATABASE_VERSION) { "不支持此备份版本，请使用兼容的新版本 App" }
+        require((zones.none {it.limitUnit!="PORTION"} && foods.none {it.gramsPerPortion!=null}) || (backupVersion>=11 && databaseVersion>=8)) {"克重分区和每份克重需要第 11 版备份与第 8 版数据库，不能降级保存"}
         require((zones.isEmpty() && foods.none {it.zoneId!=null || it.zonePortionSize!=1.0 || it.sortOrder!=0L}) || (backupVersion>=10 && databaseVersion>=7)) { "食品分区和排序需要第 10 版备份与第 7 版数据库，不能降级保存" }
         require((foods.none {it.nutritionTags.isNotEmpty() || it.pricePerUnitYuan!=null} && intakes.none {it.costYuan!=null}) || (backupVersion>=10 && databaseVersion>=7)) {"食品营养分区和价格需要第 10 版备份与第 7 版数据库，不能降级保存"}
         require((dailyFoods.isEmpty() && applications.isEmpty() && dayModes.isEmpty() && intakes.none {it.source=="ROUTINE"}) || (backupVersion>=10 && databaseVersion>=7)) {"每日必吃和放纵日数据需要第 10 版备份与第 7 版数据库，不能降级保存"}
@@ -110,8 +111,8 @@ object BackupCodec {
         val data=JSONObject().apply {
             put("bodies",JSONArray(b.bodies.map {b -> JSONObject().put("day",b.day).put("weight",b.weight).put("fatPercent",b.fatPercent).put("lean",b.lean).put("muscle",b.muscle ?: JSONObject.NULL).apply {b.energy?.let {put("energy",EnergySnapshotCodec.encode(it))}}}))
             put("targets",JSONArray(b.targets.map {JSONObject().put("day",it.day).put("nutrition",n(it.nutrition)).put("planSnapshot",it.planSnapshot)}))
-            put("foods",JSONArray(b.foods.map {JSONObject().put("id",it.id).put("name",it.name).put("unit",it.unit).put("basisAmount",it.basisAmount).put("nutrition",n(it.nutrition)).put("step",it.step).put("maximum",it.maximum).put("allowed",it.allowed).put("energyInputUnit",it.energyInputUnit).put("isDeleted",it.isDeleted).put("zoneId",it.zoneId?:JSONObject.NULL).put("zonePortionSize",it.zonePortionSize).put("sortOrder",it.sortOrder).put("nutritionTags",it.nutritionTags).put("pricePerUnitYuan",it.pricePerUnitYuan?:JSONObject.NULL)}))
-            put("zones",JSONArray(b.zones.map {JSONObject().put("id",it.id).put("name",it.name).put("dailyMaximum",it.dailyMaximum?:JSONObject.NULL).put("recommendationMaximum",it.recommendationMaximum?:JSONObject.NULL).put("sortOrder",it.sortOrder)}))
+            put("foods",JSONArray(b.foods.map {JSONObject().put("id",it.id).put("name",it.name).put("unit",it.unit).put("basisAmount",it.basisAmount).put("nutrition",n(it.nutrition)).put("step",it.step).put("maximum",it.maximum).put("allowed",it.allowed).put("energyInputUnit",it.energyInputUnit).put("isDeleted",it.isDeleted).put("zoneId",it.zoneId?:JSONObject.NULL).put("zonePortionSize",it.zonePortionSize).put("sortOrder",it.sortOrder).put("nutritionTags",it.nutritionTags).put("pricePerUnitYuan",it.pricePerUnitYuan?:JSONObject.NULL).put("gramsPerPortion",it.gramsPerPortion?:JSONObject.NULL)}))
+            put("zones",JSONArray(b.zones.map {JSONObject().put("id",it.id).put("name",it.name).put("dailyMaximum",it.dailyMaximum?:JSONObject.NULL).put("recommendationMaximum",it.recommendationMaximum?:JSONObject.NULL).put("sortOrder",it.sortOrder).put("limitUnit",it.limitUnit)}))
             put("dailyFoods",JSONArray(b.dailyFoods.map {JSONObject().put("id",it.id).put("foodId",it.foodId).put("unit",it.unit).put("mode",it.mode).put("quantity",it.quantity).put("enabled",it.enabled).put("startDay",it.startDay)}))
             put("applications",JSONArray(b.applications.map {JSONObject().put("day",it.day).put("templateId",it.templateId).put("intakeId",it.intakeId)}))
             put("dayModes",JSONArray(b.dayModes.map {JSONObject().put("day",it.day).put("isIndulgence",it.isIndulgence)}))
@@ -134,7 +135,7 @@ object BackupCodec {
             return value.toInt()
         }
         val version=version("backupVersion"); val databaseVersion=version("databaseVersion")
-        require(version in 1..10 && databaseVersion in 1..Migrations.DATABASE_VERSION) { "备份来自不支持的新版本，请先升级 App" }
+        require(version in 1..11 && databaseVersion in 1..Migrations.DATABASE_VERSION) { "备份来自不支持的新版本，请先升级 App" }
         val payload=if(root.has("payload")) root.getString("payload") else {
             require(version==1) { "缺少备份内容" };root.getJSONObject("data").toString()
         }
@@ -181,6 +182,7 @@ object BackupCodec {
                     it.getBoolean("isDeleted")
                 } else false
                 if(version>=10) require(it.has("zoneId") && it.has("zonePortionSize") && it.has("sortOrder") && it.has("nutritionTags") && it.has("pricePerUnitYuan")) {"食品分区、排序或价格字段缺失"}
+                if(version>=11) require(it.has("gramsPerPortion")) {"食品每份克重字段缺失"}
                 val zoneId=if(it.has("zoneId")) positiveId(it,"zoneId") else null
                 val portionSize=if(it.has("zonePortionSize")) {
                     val value=it.get("zonePortionSize");require(value is Number && value.toDouble().isFinite()) {"食品分区换算无效"};value.toDouble()
@@ -188,7 +190,7 @@ object BackupCodec {
                 val tags=if(it.has("nutritionTags")) {
                     val value=it.get("nutritionTags");require(value is String) {"食品营养分区格式无效"};value
                 } else ""
-                Food(it.getLong("id"),it.getString("name"),it.getString("unit"),it.getDouble("basisAmount"),n(it.getJSONObject("nutrition")),it.getDouble("step"),it.getDouble("maximum"),it.getBoolean("allowed"),it.optString("energyInputUnit","KCAL"),deleted,zoneId,portionSize,if(it.has("sortOrder")) exactLong(it,"sortOrder") else 0,tags,if(it.has("pricePerUnitYuan")) optionalNumber(it,"pricePerUnitYuan") else null)
+                Food(it.getLong("id"),it.getString("name"),it.getString("unit"),it.getDouble("basisAmount"),n(it.getJSONObject("nutrition")),it.getDouble("step"),it.getDouble("maximum"),it.getBoolean("allowed"),it.optString("energyInputUnit","KCAL"),deleted,zoneId,portionSize,if(it.has("sortOrder")) exactLong(it,"sortOrder") else 0,tags,if(it.has("pricePerUnitYuan")) optionalNumber(it,"pricePerUnitYuan") else null,if(it.has("gramsPerPortion")) optionalNumber(it,"gramsPerPortion") else null)
             },
             rows("intakes") {
                 require(it.has("foodId")) { "摄入记录缺少食品引用字段" }
@@ -206,7 +208,9 @@ object BackupCodec {
             if(version>=10 || data.has("zones")) rows("zones") {j ->
                 require(j.has("dailyMaximum") && j.has("recommendationMaximum") && j.has("sortOrder")) {"食品分区上限或排序字段缺失"}
                 val name=j.get("name");require(name is String) {"食品分区名称无效"}
-                FoodZone(requireNotNull(positiveId(j,"id")) {"食品分区编号缺失"},name,optionalNumber(j,"dailyMaximum"),optionalNumber(j,"recommendationMaximum"),exactLong(j,"sortOrder"))
+                if(version>=11) require(j.has("limitUnit")) {"食品分区上限单位字段缺失"}
+                val limitUnit=if(j.has("limitUnit")) j.get("limitUnit").also {require(it is String) {"食品分区上限单位格式无效"}} as String else "PORTION"
+                FoodZone(requireNotNull(positiveId(j,"id")) {"食品分区编号缺失"},name,optionalNumber(j,"dailyMaximum"),optionalNumber(j,"recommendationMaximum"),exactLong(j,"sortOrder"),limitUnit)
             } else emptyList(),
             if(version>=10 || data.has("dailyFoods")) rows("dailyFoods") {j ->
                 val unit=j.get("unit");val mode=j.get("mode");val quantity=j.get("quantity")

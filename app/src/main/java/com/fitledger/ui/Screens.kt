@@ -265,18 +265,17 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
     val direction=if(difference>=0) "热量缺口" else "热量盈余"
     Text("$label$direction：约 ${kotlin.math.abs(difference).energy(LocalEnergyUnit.current)}")
 }
-@Composable internal fun FoodEditor(food: Food?,busy: Boolean,zones:List<FoodZone> = emptyList(),initialZone:Long?=null,initialTags:String="",save: (Food)->Unit,close: ()->Unit) {
+@Composable internal fun FoodEditor(food: Food?,busy: Boolean,zones:List<FoodZone> = emptyList(),initialZone:Long?=null,initialTags:String="",zoneFoods:List<Food> = emptyList(),save: (Food)->Unit,close: ()->Unit) {
     val defaultUnit=LocalEnergyUnit.current
     var energyUnit by rememberSaveable {mutableStateOf(defaultUnit)}
-    var name by rememberSaveable {mutableStateOf(food?.name ?: "")}; var unit by rememberSaveable {mutableStateOf(food?.unit ?: "g")}
-    var basis by rememberSaveable {mutableStateOf(food?.basisAmount?.toString() ?: "100")}
+    var name by rememberSaveable {mutableStateOf(food?.name ?: "")}; var unit by rememberSaveable {mutableStateOf(food?.unit ?: zones.find {it.id==initialZone}?.let(FoodZoneQuotas::unitFor) ?: "g")}
+    var basis by rememberSaveable {mutableStateOf(food?.basisAmount?.toString() ?: if(unit=="g") "100" else "1")}
     var canonicalKcal by rememberSaveable {mutableStateOf(food?.nutrition?.kcal)}
     var kcal by rememberSaveable {mutableStateOf(food?.nutrition?.kcal?.let {energyUnit.fromKcal(it).toString()} ?: "")}; var carbs by rememberSaveable {mutableStateOf(food?.nutrition?.carbs?.toString() ?: "")}
     var protein by rememberSaveable {mutableStateOf(food?.nutrition?.protein?.toString() ?: "")}; var fat by rememberSaveable {mutableStateOf(food?.nutrition?.fat?.toString() ?: "")}
-    var step by rememberSaveable {mutableStateOf(food?.step?.toString() ?: "10")}; var max by rememberSaveable {mutableStateOf(food?.maximum?.toString() ?: "500")}
+    var step by rememberSaveable {mutableStateOf(food?.step?.toString() ?: if(unit=="g") "10" else "1")}; var max by rememberSaveable {mutableStateOf(food?.maximum?.toString() ?: if(unit=="g") "500" else "5")}
     var allowed by rememberSaveable {mutableStateOf(food?.allowed ?: true)}
     var zoneId by rememberSaveable {mutableStateOf(food?.zoneId ?: initialZone)}
-    var zonePortion by rememberSaveable {mutableStateOf(food?.zonePortionSize?.toString() ?: if(unit=="g") "100" else "1")}
     var nutritionTags by rememberSaveable {mutableStateOf(food?.nutritionTags ?: initialTags)}
     var price by rememberSaveable {mutableStateOf(food?.pricePerUnitYuan)}
     var scanned by rememberSaveable {mutableStateOf(false)}
@@ -291,7 +290,7 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
         canonicalKcal=draft.energy?.let(draft.energyUnit::toKcal)
         carbs=draft.carbs?.toString() ?: "";protein=draft.protein?.toString() ?: "";fat=draft.fat?.toString() ?: ""
         unit=draft.unit ?: "g";basis=draft.basis?.toString() ?: ""
-        step=if(unit=="g") "10" else "1";max=if(unit=="g") "500" else "5";zonePortion=if(unit=="g") "100" else "1";price=null
+        step=if(unit=="g") "10" else "1";max=if(unit=="g") "500" else "5";price=null
     }
     if(scanned) {
         Text("请核对：每 100g／每份、kcal／kJ、小数点，以及是否错把 NRV% 当作营养值。",color=MaterialTheme.colorScheme.primary)
@@ -300,12 +299,17 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
         if(showSource) Text(scanSource)
     }
     OutlinedTextField(name,{name=it},label={Text("食品名称（可注明生重/熟重）")},modifier=Modifier.fillMaxWidth())
-    Choice("计量",unit,listOf("g","份"),{it},enabled=!busy) {unit=it;basis=if(it=="g") "100" else "1";step=if(it=="g") "10" else "1";max=if(it=="g") "500" else "5";zonePortion=if(it=="g") "100" else "1";price=null}
-    Choice("种类分区",zoneId,listOf<Long?>(null)+zones.map {it.id},{id->zones.find {it.id==id}?.name ?: "未分区"},enabled=!busy) {zoneId=it}
-    if(zoneId!=null) {
-        NumberField("1 分区份对应多少 $unit",zonePortion) {zonePortion=it}
-        Text("分区上限统一按份相加。例如一片面包 50 g，就填 50；仅限制推荐，手动记录不受限制。")
-    }
+    Choice("计量",unit,listOf("g","份"),{it},enabled=!busy) {if(it!=unit) {unit=it;basis=if(it=="g") "100" else "1";step=if(it=="g") "10" else "1";max=if(it=="g") "500" else "5";price=null}}
+    val selectedZone=zones.find {it.id==zoneId}
+    val compatibleZone=zoneId==null || selectedZone?.let {FoodZoneQuotas.unitFor(it)==unit}==true
+    val requiresZoneReview=food!=null && selectedZone!=null && food.zoneId==zoneId && unit!=food.unit &&
+        (!FoodZoneQuotas.matchesUnit(food,selectedZone) || (selectedZone.limitUnit=="PORTION" && food.zonePortionSize!=1.0))
+    val matchingZones=zones.filter {FoodZoneQuotas.unitFor(it)==unit && (it.id==food?.zoneId || FoodZoneQuotas.zoneIssues(it,zoneFoods).isEmpty())}
+    Choice("种类分区",zoneId,listOf<Long?>(null)+matchingZones.map {it.id},{id->zones.find {it.id==id}?.let {"${it.name}（${it.quotaUnitLabel()}）"} ?: "未分区"},enabled=!busy) {zoneId=it}
+    Text("g 分区只放按 g 记录的食品，份分区只放按份记录的食品；上限直接累计原生数量，不跨单位换算。")
+    if(!compatibleZone) Text("当前分区与食品单位不一致。请选择同单位分区或未分区，确认保存前不会更改原资料。",color=MaterialTheme.colorScheme.error)
+    if(requiresZoneReview) Text("修改食品计量不能替代旧分区整理。请先在分区管理确认单位与上限，或将食品移至未分区后保存。",color=MaterialTheme.colorScheme.error)
+    if(selectedZone!=null && FoodZoneQuotas.zoneIssues(selectedZone,zoneFoods).isNotEmpty()) Text("当前分区需要整理并重新确认上限，暂不参与推荐。可在分区管理中处理；普通编辑不会自动改写旧换算。",color=MaterialTheme.colorScheme.error)
     NutritionTagEditor(nutritionTags,!busy) {nutritionTags=it}
     NumberField("以下营养值对应多少 $unit",basis) {basis=it}
     Choice("热量单位",energyUnit,EnergyUnit.entries.toList(),{it.label}) {newUnit ->
@@ -319,7 +323,9 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
     Row {Checkbox(allowed,{allowed=it});Text("允许参与推荐",Modifier.padding(top=12.dp))}
     if(scanned) Row {Checkbox(reviewed,{reviewed=it});Text("我已对照包装核对单位、基准和所有营养数值",Modifier.padding(top=12.dp).weight(1f))}
     Row {Button(onClick={save(Food(food?.id ?: 0,name.trim(),unit,basis.number(),Nutrition(canonicalKcal ?: Double.NaN,carbs.number(),protein.number(),fat.number()),step.number(),max.number(),allowed,energyUnit.name,
-        zoneId=zoneId,zonePortionSize=if(zoneId==null) 1.0 else zonePortion.number(),sortOrder=food?.sortOrder ?: 0,nutritionTags=nutritionTags,pricePerUnitYuan=price))},enabled=!busy && (!scanned || reviewed)) {Text("保存食品")};TextButton(onClick=close,enabled=!busy) {Text("关闭编辑")}}
+        zoneId=zoneId,zonePortionSize=if(food!=null && food.zoneId==zoneId) food.zonePortionSize else 1.0,
+        sortOrder=food?.sortOrder ?: 0,nutritionTags=nutritionTags,pricePerUnitYuan=price,
+        gramsPerPortion=food?.gramsPerPortion))},enabled=!busy && compatibleZone && !requiresZoneReview && (!scanned || reviewed)) {Text("保存食品")};TextButton(onClick=close,enabled=!busy) {Text("关闭编辑")}}
 }
 @Composable private fun RecommendationScreen(vm: LedgerViewModel,s: LedgerState,busy: Boolean) {
     val day by vm.today.collectAsStateWithLifecycle()
@@ -335,19 +341,24 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
         Text("全天预算 ¥${budget.money()} · 已计价 ¥${known.money()} · 剩余 ¥${(budget-known).money()}")
         if(entries.any {it.costYuan==null}) Text("今日有未计价摄入，暂时无法确认全天预算。旧记录不会按现价重算；可先取消预算限制。",color=MaterialTheme.colorScheme.error)
     }
-    val allowed = s.foods.filter {it.allowed}
+    val eligibleIds=FoodZoneQuotas.candidates(s.allFoods,s.zones).filter {it.allowed}.map {it.id}.toSet()
+    val allowed = s.foods.filter {it.id in eligibleIds}
     val locks = remember {mutableStateMapOf<Long,String>()}
     val allowedIds=allowed.map {it.id}.toSet()
-    LaunchedEffect(allowedIds) {
-        val removed=locks.keys.filter {it !in allowedIds}
-        removed.forEach {locks.remove(it)}
-        if(removed.isNotEmpty()) vm.suggestion.value=null
+    val invalidLockIds=locks.keys.filter {it !in allowedIds}
+    LaunchedEffect(allowedIds) {vm.suggestion.value=null}
+    if(invalidLockIds.isNotEmpty()) {
+        Text("有必吃食品已不符合当前分区或推荐条件，请处理后再计算；不会自动忽略你的必吃设置。",color=MaterialTheme.colorScheme.error)
+        invalidLockIds.forEach {id->Row {
+            Text(s.allFoods.find {it.id==id}?.name ?: "食品 $id",Modifier.weight(1f))
+            TextButton(onClick={locks.remove(id);vm.suggestion.value=null},enabled=!busy) {Text("取消此项锁定")}
+        }}
     }
     allowed.forEach { f ->
         Row {Checkbox(f.id in locks,{if(it) locks[f.id]=f.step.toString() else locks.remove(f.id);vm.suggestion.value=null},enabled=!busy);Text("锁定 ${f.name}",Modifier.padding(top=12.dp))}
         if(f.id in locks) NumberField("必吃量 ${f.unit}（步长 ${f.step.f()}）",locks.getValue(f.id),enabled=!busy) {locks[f.id]=it;vm.suggestion.value=null}
     }
-    Button(onClick={vm.recommend(locks.filterKeys {it in allowedIds}.mapValues {it.value.number()},preferValue)},enabled=!busy && allowed.isNotEmpty()) {Text("计算搭配")}
+    Button(onClick={vm.recommend(locks.mapValues {it.value.number()},preferValue)},enabled=!busy && allowed.isNotEmpty() && invalidLockIds.isEmpty()) {Text("计算搭配")}
     val suggestion by vm.suggestion.collectAsStateWithLifecycle()
     suggestion?.let { result ->
         if(result.quantities.isEmpty()) {

@@ -19,7 +19,7 @@ class MigrationTest {
             execSQL("INSERT INTO intakes (id,day,foodId,name,unit,quantity,kcal,carbs,protein,fat) VALUES (9,20000,7,'米饭','g',200,232,52,5.2,0.6)")
             close()
         }
-        helper.runMigrationsAndValidate("migration-test",7,true,*Migrations.ALL).apply {
+        helper.runMigrationsAndValidate("migration-test",8,true,*Migrations.ALL).apply {
             query("SELECT kcal,energyInputUnit FROM foods WHERE id=7").use {assertTrue(it.moveToFirst());assertEquals(116.0,it.getDouble(0),0.0);assertEquals("KCAL",it.getString(1))}
             query("SELECT lean FROM bodies WHERE day=20000").use {assertTrue(it.moveToFirst());assertEquals(61.3952,it.getDouble(0),0.0)}
             query("SELECT planSnapshot FROM targets WHERE day=20000").use {assertTrue(it.moveToFirst());assertEquals("original-plan-snapshot",it.getString(0))}
@@ -128,6 +128,32 @@ class MigrationTest {
             for(table in listOf("daily_food_templates","daily_food_applications","day_modes")) {
                 query("SELECT COUNT(*) FROM $table").use {assertTrue(it.moveToFirst());assertEquals(0,it.getInt(0))}
             }
+            close()
+        }
+    }
+    @Test fun v7UpgradeOnlyAddsPortionDefaultAndUnknownGramsKeepingOriginalData() {
+        helper.createDatabase("migration-v7-grams",7).apply {
+            execSQL("INSERT INTO food_zones VALUES (1,'旧面包',3.0,2.0,5)")
+            execSQL("INSERT INTO foods (id,name,unit,basisAmount,kcal,carbs,protein,fat,step,maximum,allowed,energyInputUnit,isDeleted,zoneId,zonePortionSize,sortOrder,nutritionTags,pricePerUnitYuan) VALUES (7,'面包','份',1,100,20,3,1,1,10,1,'KJ',1,1,0.5,6,'CARBS,PROTEIN',2.5)")
+            execSQL("INSERT INTO bodies VALUES (20000,72.4,15.2,61.3952,NULL,21,175,'MALE',12000,1.55,1700,2635)")
+            execSQL("INSERT INTO targets VALUES (20000,2000,250,120,57.77,'exact old plan')")
+            execSQL("INSERT INTO intakes VALUES (9,20000,7,'历史面包名','份',2,200,40,6,2,'FOOD',4.8)")
+            execSQL("INSERT INTO pending_settings VALUES (1,'exact old settings')")
+            close()
+        }
+        helper.runMigrationsAndValidate("migration-v7-grams",8,true,Migrations.MIGRATION_7_8).apply {
+            query("SELECT name,dailyMaximum,recommendationMaximum,sortOrder,limitUnit FROM food_zones").use {
+                assertTrue(it.moveToFirst());assertEquals("旧面包",it.getString(0));assertEquals(3.0,it.getDouble(1),0.0)
+                assertEquals(2.0,it.getDouble(2),0.0);assertEquals(5,it.getInt(3));assertEquals("PORTION",it.getString(4))
+            }
+            query("SELECT zoneId,zonePortionSize,isDeleted,energyInputUnit,kcal,nutritionTags,pricePerUnitYuan,sortOrder,gramsPerPortion FROM foods").use {
+                assertTrue(it.moveToFirst());assertEquals(1L,it.getLong(0));assertEquals(0.5,it.getDouble(1),0.0);assertEquals(1,it.getInt(2))
+                assertEquals("KJ",it.getString(3));assertEquals(100.0,it.getDouble(4),0.0);assertEquals("CARBS,PROTEIN",it.getString(5))
+                assertEquals(2.5,it.getDouble(6),0.0);assertEquals(6,it.getInt(7));assertTrue(it.isNull(8))
+            }
+            query("SELECT name,kcal,costYuan FROM intakes").use {assertTrue(it.moveToFirst());assertEquals("历史面包名",it.getString(0));assertEquals(200.0,it.getDouble(1),0.0);assertEquals(4.8,it.getDouble(2),0.0)}
+            query("SELECT planSnapshot FROM targets").use {assertTrue(it.moveToFirst());assertEquals("exact old plan",it.getString(0))}
+            query("SELECT payload FROM pending_settings").use {assertTrue(it.moveToFirst());assertEquals("exact old settings",it.getString(0))}
             close()
         }
     }
