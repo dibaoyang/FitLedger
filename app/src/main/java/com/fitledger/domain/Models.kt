@@ -116,7 +116,7 @@ data class Candidate(
     val zoneId: Long? = null, val zonePortionSize: Double = 1.0, val pricePerUnitYuan: Double? = null
 )
 /** Quantity available for this recommendation, after the caller deducts today's intake. */
-data class ZoneLimit(val zoneId: Long, val name: String, val maximumPortions: Double) {
+data class ZoneLimit(val zoneId: Long, val name: String, val maximumPortions: Double, val allowMultipleFoods:Boolean = true) {
     init {
         require(zoneId > 0 && name.isNotBlank()) { "食品分区无效" }
         require(maximumPortions.isFinite() && maximumPortions >= 0) { "分区推荐剩余上限须为非负有限数" }
@@ -165,8 +165,12 @@ object Recommender {
             require(n.isFinite() && n > 0 && n <= f.maximum && kotlin.math.abs(n/f.step-round(n/f.step)) < 0.00001) { "锁定量须符合调整单位，且不超过最大推荐量" }
         }
         val amounts = eligible.associate { it.id to (locks[it.id] ?: 0.0) }.toMutableMap()
+        zoneLimits.filter {!it.allowMultipleFoods}.forEach {limit ->
+            require(eligible.count {it.zoneId==limit.zoneId && it.id in locks}<=1) {"“${limit.name}”不允许同区多种食品同时出现，不能同时锁定该区两种食品；请只保留一种锁定"}
+        }
         fun withinZoneLimit(zoneId: Long?): Boolean {
             val limit = limits[zoneId] ?: return true
+            if(!limit.allowMultipleFoods && eligible.count {it.zoneId==zoneId && amounts.getValue(it.id)>0}>1) return false
             return QuotaMath.within(eligible.filter { it.zoneId == zoneId }.sumOf { amounts.getValue(it.id) / it.zonePortionSize }, limit.maximumPortions)
         }
         zoneLimits.forEach { require(withinZoneLimit(it.zoneId)) { "锁定必吃食品超过“${it.name}”分区的剩余上限，请调整锁定量或分区设置" } }
@@ -195,9 +199,27 @@ object Recommender {
                 amounts[f.id] = chosen
                 changed = changed || chosen != previous
             }
+            // A different unlocked food may fit better even when removing the current one
+            // alone would worsen the score. Compare whole replacements without touching locks.
+            zoneLimits.filter {!it.allowMultipleFoods}.forEach {limit ->
+                val group=eligible.filter {it.zoneId==limit.zoneId}
+                if(group.none {it.id in locks}) group.forEach {recipient ->
+                    val previous=group.associate {it.id to amounts.getValue(it.id)}
+                    group.forEach {amounts[it.id]=0.0}
+                    var chosen:Double?=null
+                    for(i in 0..kotlin.math.floor(recipient.maximum/recipient.step).toInt()) {
+                        amounts[recipient.id]=i*recipient.step
+                        if(!withinZoneLimit(recipient.zoneId)) continue
+                        val s=score(total())
+                        if(s<best-1e-9) {best=s;chosen=i*recipient.step}
+                    }
+                    if(chosen==null) previous.forEach {(id,amount)->amounts[id]=amount}
+                    else {group.forEach {amounts[it.id]=0.0};amounts[recipient.id]=chosen!!;changed=true}
+                }
+            }
             // A full shared budget can block a useful food swap. Exchange one discrete step
             // while keeping exact locks untouched, then let the next coordinate pass refine it.
-            unlocked.filter { it.zoneId in limits }.groupBy { it.zoneId }.values.forEach { group ->
+            unlocked.filter { it.zoneId in limits && limits[it.zoneId]?.allowMultipleFoods==true }.groupBy { it.zoneId }.values.forEach { group ->
                 group.forEach { recipient ->
                     group.filter { it.id != recipient.id }.forEach donorLoop@ { donor ->
                         val oldRecipient = amounts.getValue(recipient.id)

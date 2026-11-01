@@ -13,6 +13,7 @@ data class DailyTarget(@PrimaryKey val day: Long, @Embedded val nutrition: Nutri
 data class FoodZone(@PrimaryKey(autoGenerate = true) val id: Long = 0, val name: String,
     val dailyMaximum: Double? = null, val recommendationMaximum: Double? = null,
     @ColumnInfo(defaultValue = "0") val sortOrder:Long = 0,
+    @ColumnInfo(defaultValue = "1") val allowMultipleFoods:Boolean = true,
     @ColumnInfo(defaultValue = "'PORTION'") val limitUnit:String = "PORTION") {
     fun validate() {
         require(id >= 0 && name.isNotBlank() && name.length <= 100 && name.none { it.code < 32 }) { "请填写 100 字以内的分区名称" }
@@ -29,10 +30,24 @@ data class Food(@PrimaryKey(autoGenerate = true) val id: Long = 0, val name: Str
     val zoneId: Long? = null, @ColumnInfo(defaultValue = "1.0") val zonePortionSize: Double = 1.0,
     @ColumnInfo(defaultValue = "0") val sortOrder:Long = 0,
     @ColumnInfo(defaultValue = "''") val nutritionTags:String = "", val pricePerUnitYuan:Double? = null,
-    val gramsPerPortion:Double? = null) {
-    fun candidate() = Candidate(id, name, nutrition*(1/basisAmount), step, maximum, allowed && !isDeleted,zoneId,zonePortionSize,pricePerUnitYuan)
+    @ColumnInfo(defaultValue = "0") val favorite:Boolean = false,
+    @ColumnInfo(defaultValue = "''") val quickAmounts:String = "",
+    val gramsPerPortion:Double? = null,
+    @ColumnInfo(defaultValue = "''") val aliases:String = "",
+    @ColumnInfo(defaultValue = "0") val minimum:Double = 0.0,
+    @ColumnInfo(defaultValue = "''") val preparationTags:String = "") {
+    fun candidate():Candidate {
+        val wholeStep=if(unit=="份") PortionQuantities.recommendStep(step) else step
+        return Candidate(id,name,nutrition*(1/basisAmount),wholeStep?.takeIf {it<=maximum} ?: step,maximum,
+            allowed && !isDeleted && wholeStep!=null && wholeStep<=maximum,zoneId,zonePortionSize,pricePerUnitYuan)
+    }
     fun validate() {
         require(name.isNotBlank()) { "请填写食品名称" }
+        FoodAliases.decode(aliases)
+        PreparationTags.decode(preparationTags)
+        require(minimum.isFinite() && minimum>=0 && minimum<=maximum) {"最小推荐量须为0至最大推荐量之间的有效数量"}
+        if(unit=="份" && minimum>0) PortionQuantities.requireWhole(unit,minimum)
+        QuickAmounts.decode(quickAmounts)
         require(energyInputUnit in EnergyUnit.entries.map { it.name }) { "热量单位无效" }
         require(unit == "g" || unit == "份")
         require(zoneId == null || zoneId > 0) { "食品分区无效" }
@@ -74,7 +89,9 @@ interface LedgerDao {
     @Query("DELETE FROM food_zones") suspend fun clearZonesForRestore()
     @Query("SELECT * FROM exercises ORDER BY id DESC") fun exercises(): Flow<List<Exercise>>
     @Query("SELECT * FROM exercises ORDER BY id") suspend fun allExercises():List<Exercise>
-    @Insert suspend fun insertExercise(exercise:Exercise)
+    @Insert suspend fun insertExercise(exercise:Exercise):Long
+    @Query("SELECT * FROM exercises WHERE id=:id") suspend fun exercise(id:Long):Exercise?
+    @Update suspend fun updateExercise(exercise:Exercise):Int
     @Query("DELETE FROM exercises WHERE id=:id AND day=:day") suspend fun deleteExercise(id:Long,day:Long)
     @Query("DELETE FROM exercises") suspend fun clearExercisesForRestore()
     @Query("SELECT * FROM bodies ORDER BY day") fun bodies(): Flow<List<BodyRecord>>
@@ -109,9 +126,14 @@ interface LedgerDao {
     @Query("DELETE FROM bodies") suspend fun clearBodiesForRestore()
     @Query("DELETE FROM foods") suspend fun clearFoodsForRestore()
 }
-@Database(entities = [BodyRecord::class, DailyTarget::class, Food::class, Intake::class, PendingSettings::class, Exercise::class, FoodZone::class, DailyFoodTemplate::class, DailyFoodApplication::class, DayMode::class], version = Migrations.DATABASE_VERSION, exportSchema = true)
+@Database(entities = [BodyRecord::class, DailyTarget::class, Food::class, Intake::class, PendingSettings::class, Exercise::class, FoodZone::class, DailyFoodTemplate::class, DailyFoodApplication::class, DayMode::class, DailyFoodSkip::class, FoodCombo::class, FoodPresetPlan::class, FoodPresetItem::class, FoodRecipe::class, PendingFood::class, RecipeBatch::class], version = Migrations.DATABASE_VERSION, exportSchema = true)
 abstract class LedgerDatabase: RoomDatabase() {
     abstract fun dao(): LedgerDao
     abstract fun dailyEatingDao():DailyEatingDao
+    abstract fun featureDao():FeatureDao
+    abstract fun foodPresetDao():FoodPresetDao
+    abstract fun recipeDao():RecipeDao
+    abstract fun pendingFoodDao():PendingFoodDao
+    abstract fun recipeBatchDao():RecipeBatchDao
 }
 

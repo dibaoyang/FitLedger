@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A launcher-hosted RemoteViews surface needs its own background; no Activity window is drawn behind it. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools" tools:ignore="Overdraw"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#F2F5EF">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
+        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+            android:text="@string/widget_heading" android:textColor="#233328" android:textSize="16sp" android:textStyle="bold" />
+        <Button android:id="@+id/widget_refresh" android:layout_width="wrap_content" android:layout_height="48dp"
+            android:minWidth="48dp" android:paddingHorizontal="10dp" android:text="@string/widget_refresh" android:contentDescription="@string/widget_refresh_description"
+            android:textColor="#233328" android:textSize="12sp" />
+    </LinearLayout>
+    <TextView android:id="@+id/widget_date" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textColor="#526057" android:textSize="12sp" />
+    <LinearLayout android:id="@+id/widget_energy" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:visibility="gone" android:layout_marginTop="8dp">
+        <TextView android:id="@+id/widget_consumed" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textColor="#233328" android:textSize="18sp" android:textStyle="bold" />
+        <TextView android:id="@+id/widget_target" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textColor="#526057" android:textSize="14sp" android:layout_marginTop="4dp" />
+        <TextView android:id="@+id/widget_remaining" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textColor="#233328" android:textSize="14sp" android:layout_marginTop="4dp" />
+    </LinearLayout>
+    <TextView android:id="@+id/widget_message" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:text="@string/widget_open_description" android:textColor="#526057" android:textSize="12sp" />
+</LinearLayout>

@@ -1,6 +1,7 @@
 package com.fitledger.data
 
 import androidx.room.Dao
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.Insert
@@ -11,6 +12,7 @@ import androidx.room.Upsert
 import androidx.room.withTransaction
 import com.fitledger.domain.FoodPricing
 import com.fitledger.domain.Nutrition
+import com.fitledger.domain.PortionQuantities
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
 
@@ -23,7 +25,8 @@ data class DailyFoodTemplate(
     val mode: String,
     val quantity: Double,
     val enabled: Boolean = true,
-    val startDay: Long = LocalDate.now().toEpochDay()
+    val startDay: Long = LocalDate.now().toEpochDay(),
+    @ColumnInfo(defaultValue = "''") val schedule:String = ""
 ) {
     fun validate() {
         require(id >= 0 && foodId > 0) { "每日必吃食品编号无效" }
@@ -33,6 +36,7 @@ data class DailyFoodTemplate(
         require(quantity.isFinite() && quantity > 0) { "每日必吃数量须为大于 0 的有效数值" }
         require(startDay >= 0) { "每日必吃开始日期无效" }
         require(runCatching { LocalDate.ofEpochDay(startDay) }.isSuccess) { "每日必吃开始日期无效" }
+        ScheduleCodec.decode(schedule).validate(startDay)
     }
 
     fun quantityForWeight(weightKg: Double): Double {
@@ -50,11 +54,29 @@ data class DailyFoodTemplate(
 @Entity(tableName = "daily_food_applications", primaryKeys = ["day", "templateId"], indices = [Index(value = ["intakeId"], unique = true)])
 data class DailyFoodApplication(val day: Long, val templateId: Long, val intakeId: Long)
 
+/** Pauses are independent from completion markers and outlive the template's lifetime. */
+@Entity(tableName="daily_food_skips",primaryKeys=["day","templateId"])
+data class DailyFoodSkip(val day:Long,val templateId:Long)
+
 @Entity(tableName = "day_modes")
 data class DayMode(@PrimaryKey val day: Long, val isIndulgence: Boolean)
 
 @Dao
 interface DailyEatingDao {
+    @Query("SELECT * FROM daily_food_skips ORDER BY day,templateId")
+    fun skips():Flow<List<DailyFoodSkip>>
+
+    @Query("SELECT * FROM daily_food_skips ORDER BY day,templateId")
+    suspend fun allSkips():List<DailyFoodSkip>
+
+    @Query("SELECT * FROM daily_food_skips WHERE day=:day AND templateId=:templateId")
+    suspend fun skip(day:Long,templateId:Long):DailyFoodSkip?
+
+    @Upsert suspend fun saveSkip(skip:DailyFoodSkip)
+    @Query("DELETE FROM daily_food_skips WHERE day=:day AND templateId=:templateId")
+    suspend fun deleteSkip(day:Long,templateId:Long)
+    @Query("DELETE FROM daily_food_skips") suspend fun clearSkipsForRestore()
+
     @Query("SELECT * FROM daily_food_templates ORDER BY id")
     fun templates(): Flow<List<DailyFoodTemplate>>
 
@@ -113,9 +135,8 @@ class DailyEatingStore(private val db: LedgerDatabase) {
     suspend fun saveTemplate(template: DailyFoodTemplate, day: Long): List<String> = db.withTransaction {
         requireToday(day)
         template.validate()
-        if (template.id != 0L) {
-            requireNotNull(dao.template(template.id)) { "这项每日必吃设置已删除，请重新添加" }
-        }
+        val old=if(template.id!=0L) requireNotNull(dao.template(template.id)) { "这项每日必吃设置已删除，请重新添加" } else null
+        if(old==null || old.quantity!=template.quantity || old.unit!=template.unit) PortionQuantities.requireWhole(template.unit,template.quantity)
         val food = requireNotNull(ledger.food(template.foodId)) { "食品不存在，请重新选择" }
         require(!food.isDeleted) { "食品已删除，请重新选择" }
         require(food.unit == template.unit) { "食品单位已改变，请重新选择数量和单位" }
@@ -133,6 +154,14 @@ class DailyEatingStore(private val db: LedgerDatabase) {
         Unit
     }
 
+    suspend fun setSkipped(day:Long,templateId:Long,skipped:Boolean):List<String> = db.withTransaction {
+        requireToday(day)
+        requireNotNull(dao.template(templateId)) {"这项每日必吃设置已删除"}
+        if(skipped) dao.saveSkip(DailyFoodSkip(day,templateId)) else dao.deleteSkip(day,templateId)
+        // Resuming never duplicates an intake already created or manually deleted today.
+        if(skipped) emptyList() else apply(day)
+    }
+
     /** Creates each template at most once today; a manually deleted entry stays deleted. */
     suspend fun apply(day: Long): List<String> = db.withTransaction {
         requireToday(day)
@@ -141,7 +170,11 @@ class DailyEatingStore(private val db: LedgerDatabase) {
             return@withTransaction emptyList()
         }
         val warnings = mutableListOf<String>()
-        dao.allTemplates().filter { it.enabled && it.startDay <= day }.forEach { template ->
+        dao.allTemplates().filter { it.enabled }.forEach { template ->
+            val scheduled=try {ScheduleCodec.decode(template.schedule).matches(day,template.startDay)}
+                catch(invalid:Exception) {warnings+="每日必吃日期规则无效，已跳过该项设置";false}
+            if(!scheduled) return@forEach
+            if(dao.skip(day,template.id)!=null) return@forEach
             if (dao.application(day, template.id) != null) return@forEach
             val food = ledger.food(template.foodId)
             if (food == null || food.isDeleted) {
@@ -155,6 +188,7 @@ class DailyEatingStore(private val db: LedgerDatabase) {
             // Only a bad template/food snapshot is skipped. Database failures still roll back.
             val snapshot = try {
                 val quantity = template.quantityForWeight(body.weight)
+                PortionQuantities.requireWhole(food.unit,quantity)
                 Intake(day = day, foodId = food.id, name = food.name, unit = food.unit,
                     quantity = quantity, nutrition = nutrition(food, quantity), source = "ROUTINE",
                     costYuan = FoodPricing.cost(food.pricePerUnitYuan, quantity))
@@ -182,6 +216,7 @@ class DailyEatingStore(private val db: LedgerDatabase) {
         require(quantity.isFinite() && quantity > 0) { "摄入量须为大于 0 的有效数值" }
         val saved = requireNotNull(ledger.intake(id)) { "这条摄入记录已删除" }
         require(saved.day == day && saved.source in listOf("FOOD", "ROUTINE")) { "仅能修改今日的食品摄入量" }
+        if(quantity!=saved.quantity) PortionQuantities.requireWhole(saved.unit,quantity)
         require(saved.quantity.isFinite() && saved.quantity > 0) { "原摄入量无效，无法修改" }
         val updated = saved.nutrition * (quantity / saved.quantity)
         require(updated.values().all { it.isFinite() && it >= 0 }) { "修改后的营养超出可计算范围" }

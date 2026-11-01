@@ -13,15 +13,16 @@ internal object RecommendationSearch {
     private const val BEAM_WIDTH = 48
     private const val NOT_FOUND = "当前食品未找到满足要求的组合，请调整食品、预算或营养范围"
 
-    private data class Node(val quantities: Map<Long, Double>, val nutrition: Nutrition, val cost: Double, val zones: Map<Long, Double>)
+    private data class Node(val quantities: Map<Long, Double>, val nutrition: Nutrition, val cost: Double, val zones: Map<Long, Double>,val zoneFoods:Map<Long,Set<Long>>)
     private class Context(
         val foods: List<Candidate>, val remaining: Nutrition, val zoneLimits: List<ZoneLimit>,
-        val policy: RecommendationPolicy, spentYuan: Double?, val preferValue: Boolean
+        val policy: RecommendationPolicy, spentYuan: Double?, val preferValue: Boolean,val lockedIds:Set<Long> = emptySet()
     ) {
         val pricedOnly = policy.dailyBudgetYuan != null || preferValue
         val byId = foods.associateBy { it.id }
         val eligible = foods.filter { it.allowed && (!pricedOnly || it.pricePerUnitYuan != null) }
         val limits = zoneLimits.associate { it.zoneId to it.maximumPortions }
+        val exclusiveZones=zoneLimits.filter {!it.allowMultipleFoods}.map {it.zoneId}.toSet()
         val rules = listOf(policy.carbs, policy.protein, policy.fat)
         val target = listOf(remaining.carbs, remaining.protein, remaining.fat)
         val lower = rules.indices.map { i -> rules[i].under?.let { max(0.0, target[i] - it) } ?: 0.0 }
@@ -40,6 +41,7 @@ internal object RecommendationSearch {
             var nutrition = Nutrition()
             var totalCost = 0.0
             val zones = mutableMapOf<Long, Double>()
+            val zoneFoods=mutableMapOf<Long,MutableSet<Long>>()
             quantities.toSortedMap().forEach { (id, quantity) ->
                 val food = byId[id]
                 require(food != null && food.allowed) { "食品已不可用或不允许参与推荐，请重新计算" }
@@ -50,9 +52,10 @@ internal object RecommendationSearch {
                 nutrition += food.perUnit * quantity
                 totalCost += (food.pricePerUnitYuan ?: 0.0) * quantity
                 food.zoneId?.let { zone -> zones[zone] = (zones[zone] ?: 0.0) + quantity / food.zonePortionSize }
+                food.zoneId?.takeIf {it in exclusiveZones}?.let {zone ->zoneFoods.getOrPut(zone) {mutableSetOf()}.add(id)}
             }
             require(nutrition.values().all { it.isFinite() } && totalCost.isFinite()) { "推荐总量超出可计算范围" }
-            return Node(quantities.filterValues { it > 0 }, nutrition, totalCost, zones)
+            return Node(quantities.filterValues { it > 0 }, nutrition, totalCost, zones,zoneFoods)
         }
 
         fun upperAllowed(node: Node): Boolean {
@@ -60,7 +63,8 @@ internal object RecommendationSearch {
             return node.nutrition.values().all { it.isFinite() } && node.cost.isFinite() &&
                 macros.indices.all { upper[it] == Double.POSITIVE_INFINITY || QuotaMath.within(macros[it], upper[it]) } &&
                 (availableBudget == null || QuotaMath.within(node.cost, availableBudget)) &&
-                node.zones.all { (zone, amount) -> limits[zone]?.let { QuotaMath.within(amount, it) } ?: true }
+                node.zones.all { (zone, amount) -> limits[zone]?.let { QuotaMath.within(amount, it) } ?: true } &&
+                node.zoneFoods.values.all {it.size<=1}
         }
 
         fun feasible(node: Node): Boolean {
@@ -91,12 +95,22 @@ internal object RecommendationSearch {
             return objective(node) + missing * 100.0
         }
 
+        fun baseFor(node:Node,food:Candidate):Node {
+            if(food.zoneId !in exclusiveZones) return node
+            val competing=node.quantities.keys.filter {it!=food.id && byId.getValue(it).zoneId==food.zoneId}
+            if(competing.isEmpty() || competing.any {it in lockedIds}) return node
+            return this.node(node.quantities-competing.toSet())
+        }
+
         fun add(node: Node, food: Candidate, quantity: Double): Node {
             if (quantity == 0.0) return node
-            val zones = if (food.zoneId == null) node.zones else node.zones +
-                (food.zoneId to ((node.zones[food.zoneId] ?: 0.0) + quantity / food.zonePortionSize))
-            return Node(node.quantities + (food.id to quantity), node.nutrition + food.perUnit * quantity,
-                node.cost + (food.pricePerUnitYuan ?: 0.0) * quantity, zones)
+            val base=baseFor(node,food)
+            val zones = if (food.zoneId == null) base.zones else base.zones +
+                (food.zoneId to ((base.zones[food.zoneId] ?: 0.0) + quantity / food.zonePortionSize))
+            val choices=if(food.zoneId !in exclusiveZones) base.zoneFoods else base.zoneFoods+
+                (requireNotNull(food.zoneId) to ((base.zoneFoods[food.zoneId]?:emptySet())+food.id))
+            return Node(base.quantities + (food.id to quantity), base.nutrition + food.perUnit * quantity,
+                base.cost + (food.pricePerUnitYuan ?: 0.0) * quantity, zones,choices)
         }
     }
 
@@ -143,8 +157,12 @@ internal object RecommendationSearch {
         policy: RecommendationPolicy, spentYuan: Double?, preferValue: Boolean
     ): Suggestion {
         validateInputs(foods, remaining, zoneLimits, policy, spentYuan)
-        val context = Context(foods, remaining, zoneLimits, policy, spentYuan, preferValue)
         require(locks.values.all { it.isFinite() && it > 0 }) { "锁定量须为大于 0 的有限数" }
+        val byId=foods.associateBy {it.id}
+        zoneLimits.filter {!it.allowMultipleFoods}.forEach {limit ->
+            require(locks.keys.count {byId[it]?.zoneId==limit.zoneId}<=1) {"“${limit.name}”不允许同区多种食品同时出现，不能同时锁定该区两种食品；请只保留一种锁定"}
+        }
+        val context = Context(foods, remaining, zoneLimits, policy, spentYuan, preferValue,locks.keys)
         val initial = context.node(locks)
         require(context.upperAllowed(initial)) { "锁定必吃食品超过预算、分区或营养上限，请调整锁定量或限制" }
         val unlocked = context.eligible.filter { it.id !in locks }.sortedBy { it.id }
@@ -225,6 +243,7 @@ internal object RecommendationSearch {
     }
 
     private fun quantities(food: Candidate, node: Node, context: Context): List<Double> {
+        val base=context.baseFor(node,food)
         val maximum = floor(food.maximum / food.step).toInt()
         val indices = sortedSetOf(0, maximum)
         if (maximum <= 64) indices.addAll(0..maximum)
@@ -237,7 +256,7 @@ internal object RecommendationSearch {
                 val center = floor(step).toInt().coerceIn(0, maximum)
                 listOf(-8, -3, -1, 0, 1, 2, 4, 8).forEach { offset -> indices.add((center + offset).coerceIn(0, maximum)) }
             }
-            val actual = node.nutrition.values()
+            val actual = base.nutrition.values()
             val perUnit = food.perUnit.values()
             val goals = context.remaining.values()
             perUnit.indices.filter { perUnit[it] > 0 }.forEach { macro ->
@@ -247,8 +266,8 @@ internal object RecommendationSearch {
                     near((context.upper[macro - 1] - actual[macro]) / perUnit[macro])
                 }
             }
-            context.availableBudget?.let { budget -> food.pricePerUnitYuan?.takeIf { it > 0 }?.let { near((budget - node.cost) / it) } }
-            food.zoneId?.let { zone -> context.limits[zone]?.let { near((it - (node.zones[zone] ?: 0.0)) * food.zonePortionSize) } }
+            context.availableBudget?.let { budget -> food.pricePerUnitYuan?.takeIf { it > 0 }?.let { near((budget - base.cost) / it) } }
+            food.zoneId?.let { zone -> context.limits[zone]?.let { near((it - (base.zones[zone] ?: 0.0)) * food.zonePortionSize) } }
             for (index in 1..16) indices.add((maximum.toLong() * index / 16).toInt())
         }
         return indices.map { it * food.step }.filter { it <= food.maximum }
@@ -257,6 +276,7 @@ internal object RecommendationSearch {
     private fun signature(node: Node): String {
         fun rounded(value: Double) = if (abs(value) < 1e9) round(value * 1e8).toLong().toString() else value.toString()
         return node.nutrition.values().joinToString(",", transform = ::rounded) + "|" + rounded(node.cost) + "|" +
-            node.zones.toSortedMap().entries.joinToString(",") { "${it.key}:${rounded(it.value)}" }
+            node.zones.toSortedMap().entries.joinToString(",") { "${it.key}:${rounded(it.value)}" } + "|" +
+            node.zoneFoods.toSortedMap().entries.joinToString(",") {"${it.key}:${it.value.sorted().joinToString(";")}"}
     }
 }

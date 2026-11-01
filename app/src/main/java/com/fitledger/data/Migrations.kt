@@ -4,7 +4,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 object Migrations {
-    const val DATABASE_VERSION = 8
+    const val DATABASE_VERSION = 13
     val MIGRATION_1_2 = object : Migration(1, 2) {
         override fun migrate(db: SupportSQLiteDatabase) {
             // No table recreation, no UPDATE of existing nutritional or historical values.
@@ -75,11 +75,57 @@ object Migrations {
     }
     val MIGRATION_7_8=object:Migration(7,8) {
         override fun migrate(db:SupportSQLiteDatabase) {
-            // Existing limits remain portions; no amounts or historical snapshots are converted.
+            // Released hotfix: only the explicit quota unit and optional portion mass.
             db.execSQL("ALTER TABLE food_zones ADD COLUMN limitUnit TEXT NOT NULL DEFAULT 'PORTION'")
             db.execSQL("ALTER TABLE foods ADD COLUMN gramsPerPortion REAL")
         }
     }
-    val ALL = arrayOf(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5,MIGRATION_5_6,MIGRATION_6_7,MIGRATION_7_8)
+    val MIGRATION_8_9=object:Migration(8,9) {
+        override fun migrate(db:SupportSQLiteDatabase) {
+            // Append-only settings; preserve every historical snapshot and row identity.
+            db.execSQL("ALTER TABLE foods ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE foods ADD COLUMN quickAmounts TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE daily_food_templates ADD COLUMN schedule TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE food_zones ADD COLUMN allowMultipleFoods INTEGER NOT NULL DEFAULT 1")
+            db.execSQL("CREATE TABLE IF NOT EXISTS daily_food_skips (day INTEGER NOT NULL, templateId INTEGER NOT NULL, PRIMARY KEY(day,templateId))")
+            db.execSQL("CREATE TABLE IF NOT EXISTS food_combos (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, name TEXT NOT NULL, items TEXT NOT NULL)")
+        }
+    }
+    val MIGRATION_9_10=object:Migration(9,10) {
+        override fun migrate(db:SupportSQLiteDatabase) {
+            // Presets are independent of actual intake and body/target snapshots.
+            db.execSQL("CREATE TABLE IF NOT EXISTS food_preset_plans (day INTEGER NOT NULL, referenceDay INTEGER NOT NULL, referenceExpenditureKcal REAL, referenceWeightKg REAL NOT NULL, PRIMARY KEY(day))")
+            db.execSQL("CREATE TABLE IF NOT EXISTS food_preset_items (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, day INTEGER NOT NULL, foodId INTEGER NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, quantity REAL NOT NULL, kcal REAL NOT NULL, carbs REAL NOT NULL, protein REAL NOT NULL, fat REAL NOT NULL, costYuan REAL, appliedIntakeId INTEGER)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_food_preset_items_day ON food_preset_items (day)")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_food_preset_items_appliedIntakeId ON food_preset_items (appliedIntakeId)")
+        }
+    }
+    val MIGRATION_10_11=object:Migration(10,11) {
+        override fun migrate(db:SupportSQLiteDatabase) {
+            // Search aliases are personal metadata. Never rewrite food or intake snapshots.
+            db.execSQL("ALTER TABLE foods ADD COLUMN aliases TEXT NOT NULL DEFAULT ''")
+        }
+    }
+    val MIGRATION_11_12=object:Migration(11,12) {
+        override fun migrate(db:SupportSQLiteDatabase) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS food_recipes (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, name TEXT NOT NULL, ingredients TEXT NOT NULL, finishedWeightG REAL NOT NULL, foodId INTEGER)")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_food_recipes_foodId ON food_recipes (foodId)")
+            db.execSQL("ALTER TABLE food_combos ADD COLUMN ratioRules TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE food_preset_plans ADD COLUMN ratioRules TEXT NOT NULL DEFAULT ''")
+        }
+    }
+    val MIGRATION_12_13=object:Migration(12,13) {
+        override fun migrate(db:SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE foods ADD COLUMN minimum REAL NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE foods ADD COLUMN preparationTags TEXT NOT NULL DEFAULT ''")
+            db.execSQL("CREATE TABLE IF NOT EXISTS pending_foods (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, day INTEGER NOT NULL, groupId TEXT NOT NULL, foodId INTEGER NOT NULL, name TEXT NOT NULL, unit TEXT NOT NULL, quantity REAL NOT NULL, costYuan REAL, appliedIntakeId INTEGER, createdAt INTEGER NOT NULL, kcal REAL NOT NULL, carbs REAL NOT NULL, protein REAL NOT NULL, fat REAL NOT NULL)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_pending_foods_day ON pending_foods(day)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_pending_foods_groupId ON pending_foods(groupId)")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_pending_foods_appliedIntakeId ON pending_foods(appliedIntakeId)")
+            db.execSQL("CREATE TABLE IF NOT EXISTS recipe_batches (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, recipeId INTEGER, name TEXT NOT NULL, createdDay INTEGER NOT NULL, ingredients TEXT NOT NULL, finishedWeightG REAL NOT NULL, boxWeights TEXT NOT NULL, costYuan REAL, foodId INTEGER, kcal REAL NOT NULL, carbs REAL NOT NULL, protein REAL NOT NULL, fat REAL NOT NULL)")
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_recipe_batches_foodId ON recipe_batches(foodId)")
+        }
+    }
+    val ALL = arrayOf(MIGRATION_1_2,MIGRATION_2_3,MIGRATION_3_4,MIGRATION_4_5,MIGRATION_5_6,MIGRATION_6_7,MIGRATION_7_8,MIGRATION_8_9,MIGRATION_9_10,MIGRATION_10_11,MIGRATION_11_12,MIGRATION_12_13)
 }
 

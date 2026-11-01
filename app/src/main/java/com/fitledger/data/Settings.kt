@@ -48,13 +48,43 @@ data class Preferences(
     val profile:BodyProfile?=null,val privacy:Boolean=false, val visibility:BodyVisibility=BodyVisibility.all(!privacy),
     val weightInputUnit: WeightUnit = WeightUnit.KG, val weightFoodShortcut: Boolean = true,
     val hasReadIntro: Boolean = false, val skipMuscleInput: Boolean = false,
-    val recommendationPolicy: RecommendationPolicy = RecommendationPolicy()
+    val recommendationPolicy: RecommendationPolicy = RecommendationPolicy(),
+    val collapsedLibraryGroups:Set<String> = emptySet(),
+    val recommendationExtras:RecommendationExtras = RecommendationExtras(),
+    val recommendationProfiles:List<RecommendationProfile> = emptyList()
 ) {
     fun planFor(day: Long): Plan = if(nextPlan != null && effectiveFrom != null && day >= effectiveFrom) nextPlan else plan
     val editablePlan get() = nextPlan ?: plan
 }
+/** Stable identifiers: renaming or reordering a zone cannot change its remembered view state. */
+object LibraryGroupCollapse {
+    private val nutrientKeys=setOf("CARBS","PROTEIN","FAT","NONE")
+    fun type(id:Long):String {require(id>0) {"分区编号无效"};return "TYPE:$id"}
+    fun nutrition(key:String):String {require(key in nutrientKeys) {"营养分区无效"};return "NUTRITION:$key"}
+    fun validate(keys:Set<String>) {
+        require(keys.size<=100000 && keys.all {key->
+            when {
+                key.startsWith("TYPE:") -> key.removePrefix("TYPE:").let {raw->raw.toLongOrNull()?.let {it>0 && it.toString()==raw}==true}
+                key.startsWith("NUTRITION:") -> key.removePrefix("NUTRITION:") in nutrientKeys
+                else -> false
+            }
+        }) {"食品分区折叠设置无效"}
+    }
+    fun decode(j:JSONObject):Set<String> {
+        if(!j.has("collapsedLibraryGroups")) return emptySet()
+        val value=j.get("collapsedLibraryGroups")
+        require(value is JSONArray && value.length()<=100000) {"食品分区折叠设置格式无效"}
+        val keys=(0 until value.length()).map {index->
+            val key=value.get(index);require(key is String) {"食品分区折叠编号格式无效"};key
+        }
+        require(keys.distinct().size==keys.size) {"食品分区折叠设置包含重复编号"}
+        return keys.toSet().also(::validate)
+    }
+}
 object PreferencesCodec {
-    fun encode(p: Preferences): String = JSONObject().apply {
+    fun encode(p: Preferences): String {
+        LibraryGroupCollapse.validate(p.collapsedLibraryGroups)
+        return JSONObject().apply {
         put("plan", JSONObject(PlanCodec.encode(p.plan)))
         put("reminder", p.reminder); put("hour", p.hour); put("minute", p.minute); put("energyUnit",p.energyUnit.name)
         p.nextPlan?.let { put("nextPlan",JSONObject(PlanCodec.encode(it))); put("effectiveFrom",p.effectiveFrom) }
@@ -62,7 +92,11 @@ object PreferencesCodec {
         put("weightInputUnit",p.weightInputUnit.name);put("weightFoodShortcut",p.weightFoodShortcut)
         put("hasReadIntro",p.hasReadIntro);put("skipMuscleInput",p.skipMuscleInput)
         put("recommendationPolicy",RecommendationPolicyCodec.encode(p.recommendationPolicy))
-    }.toString()
+        put("collapsedLibraryGroups",JSONArray(p.collapsedLibraryGroups.sorted()))
+        put("recommendationExtras",RecommendationExtrasCodec.encode(p.recommendationExtras))
+        put("recommendationProfiles",RecommendationProfilesCodec.encode(p.recommendationProfiles))
+        }.toString()
+    }
     fun decode(text: String): Preferences = JSONObject(text).let { j ->
         val p = Preferences(PlanCodec.decode(j.getJSONObject("plan").toString()), j.getBoolean("reminder"),j.getInt("hour"),j.getInt("minute"),
             EnergyUnit.valueOf(j.optString("energyUnit","KCAL")),
@@ -74,7 +108,9 @@ object PreferencesCodec {
             if(j.has("recommendationPolicy")) {
                 require(j.get("recommendationPolicy") is JSONObject) { "推荐约束设置的格式无效" }
                 RecommendationPolicyCodec.decode(j.getJSONObject("recommendationPolicy"))
-            } else RecommendationPolicy())
+            } else RecommendationPolicy(),LibraryGroupCollapse.decode(j),
+            if(j.has("recommendationExtras")) RecommendationExtrasCodec.decode(j.getJSONObject("recommendationExtras")) else RecommendationExtras(),
+            if(j.has("recommendationProfiles")) RecommendationProfilesCodec.decode(j.getJSONArray("recommendationProfiles")) else emptyList())
         require(p.hour in 0..23 && p.minute in 0..59) { "备份中的提醒时间无效" }
         p
     }
@@ -96,6 +132,9 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
     private val hasReadIntroKey = booleanPreferencesKey("has_read_intro")
     private val skipMuscleInputKey = booleanPreferencesKey("skip_muscle_input")
     private val recommendationPolicyKey = stringPreferencesKey("recommendation_policy")
+    private val collapsedLibraryGroupsKey=stringSetPreferencesKey("collapsed_food_groups")
+    private val recommendationExtrasKey=stringPreferencesKey("recommendation_extras")
+    private val recommendationProfilesKey=stringPreferencesKey("recommendation_profiles")
     private val nextPlanKey = stringPreferencesKey("next_plan")
     private val effectiveKey = longPreferencesKey("plan_effective_day")
     private val profileKey=stringPreferencesKey("body_profile")
@@ -105,7 +144,10 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
         p[profileKey]?.let {ProfileCodec.decode(JSONObject(it))},p[privacyKey] ?: false,VisibilityMigration.read(p),
         p[weightInputUnitKey]?.let(WeightUnit::valueOf) ?: WeightUnit.KG,p[weightFoodShortcutKey] ?: true,
         p[hasReadIntroKey] ?: false,p[skipMuscleInputKey] ?: false,
-        p[recommendationPolicyKey]?.let {RecommendationPolicyCodec.decode(it)} ?: RecommendationPolicy()) }
+        p[recommendationPolicyKey]?.let {RecommendationPolicyCodec.decode(it)} ?: RecommendationPolicy(),
+        (p[collapsedLibraryGroupsKey] ?: emptySet()).also(LibraryGroupCollapse::validate),
+        p[recommendationExtrasKey]?.let {RecommendationExtrasCodec.decode(JSONObject(it))} ?: RecommendationExtras(),
+        p[recommendationProfilesKey]?.let {RecommendationProfilesCodec.decode(JSONArray(it))} ?: emptyList()) }
     suspend fun savePlan(plan: Plan, day: Long = java.time.LocalDate.now().toEpochDay(),profile:BodyProfile?=null) {
         // Materialize the currently effective plan, then schedule the replacement for tomorrow.
         store.edit { p ->
@@ -126,6 +168,24 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
         val encoded=RecommendationPolicyCodec.encode(policy).toString()
         store.edit {it[recommendationPolicyKey]=encoded}
     }
+    suspend fun setLibraryGroupsCollapsed(keys:Set<String>,collapsed:Boolean) {
+        LibraryGroupCollapse.validate(keys)
+        store.edit {p->
+            val current=p[collapsedLibraryGroupsKey] ?: emptySet()
+            LibraryGroupCollapse.validate(current)
+            val next=if(collapsed) current+keys else current-keys
+            LibraryGroupCollapse.validate(next)
+            p[collapsedLibraryGroupsKey]=next
+        }
+    }
+    suspend fun setRecommendationExtras(extras:RecommendationExtras) {
+        val encoded=RecommendationExtrasCodec.encode(extras).toString()
+        store.edit {it[recommendationExtrasKey]=encoded}
+    }
+    suspend fun setRecommendationProfiles(profiles:List<RecommendationProfile>) {
+        val encoded=RecommendationProfilesCodec.encode(profiles).toString()
+        store.edit {it[recommendationProfilesKey]=encoded}
+    }
     suspend fun setVisibility(field:BodyField,show:Boolean) {store.edit {it[booleanPreferencesKey(field.key)]=show}}
     suspend fun setAllVisible(show:Boolean) {store.edit {p->BodyField.entries.forEach {p[booleanPreferencesKey(it.key)]=show}}}
     // Compatibility for existing callers; the UI uses individual fields.
@@ -135,6 +195,7 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
         store.edit {it[profileKey]=ProfileCodec.encode(profile).toString()}
     }
     suspend fun restore(p: Preferences) {
+        LibraryGroupCollapse.validate(p.collapsedLibraryGroups)
         // Update known keys only; do not clear the DataStore or erase unrelated future preferences.
         store.edit {
             it[planKey]=PlanCodec.encode(p.plan); it[enabledKey]=p.reminder; it[hourKey]=p.hour; it[minuteKey]=p.minute; it[energyKey]=p.energyUnit.name
@@ -148,6 +209,9 @@ class Settings internal constructor(private val store: DataStore<androidx.datast
             it[hasReadIntroKey]=(it[hasReadIntroKey] ?: false) || p.hasReadIntro
             it[skipMuscleInputKey]=p.skipMuscleInput
             it[recommendationPolicyKey]=RecommendationPolicyCodec.encode(p.recommendationPolicy).toString()
+            it[collapsedLibraryGroupsKey]=p.collapsedLibraryGroups.toSet()
+            it[recommendationExtrasKey]=RecommendationExtrasCodec.encode(p.recommendationExtras).toString()
+            it[recommendationProfilesKey]=RecommendationProfilesCodec.encode(p.recommendationProfiles).toString()
         }
     }
     suspend fun reminder(enabled: Boolean, hour: Int, minute: Int) {

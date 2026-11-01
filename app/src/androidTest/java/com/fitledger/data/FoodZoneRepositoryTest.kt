@@ -25,6 +25,28 @@ class FoodZoneRepositoryTest {
         repo.dao.saveZone(FoodZone(1,"面包",3.0))
         repo.dao.saveFood(bread);repo.dao.saveFood(second)
     }
+    @Test fun freshMixingFlagRejectsOldMixedSuggestionAtomicallyButManualHistoryAndCombosRemainUnrestricted()=runBlocking {
+        seed()
+        repo.saveZone(FoodZone(1,"蛋白粉",allowMultipleFoods=true))
+        val old=repo.recommend(day,mapOf(7L to 1.0,8L to 1.0))
+        val bodies=repo.dao.allBodies();val targets=repo.dao.allTargets()
+        repo.saveZone(FoodZone(1,"蛋白粉",allowMultipleFoods=false))
+        assertTrue(runCatching {repo.record(day,old.quantities,recommendation=true)}.isFailure)
+        assertTrue(repo.dao.allIntakes().isEmpty())
+        assertEquals(bodies,repo.dao.allBodies());assertEquals(targets,repo.dao.allTargets())
+        val conflict=runCatching {repo.recommend(day,mapOf(7L to 1.0,8L to 1.0))}.exceptionOrNull()
+        assertTrue(conflict?.message.orEmpty().contains("不能同时锁定"))
+        repo.record(day,mapOf(7L to 1.0,8L to 1.0))
+        val store=FeatureStore(db)
+        val combo=store.saveCombo(FoodCombo(name="手动组合",items=ComboCodec.encode(listOf(ComboItem(7,"份",1.0),ComboItem(8,"份",1.0)))))
+        assertEquals(2,store.recordCombo(day,combo))
+        repo.dao.insertBody(BodyRecord(day-1,60.0,20.0,48.0,null))
+        repo.dao.insertTarget(DailyTarget(day-1,Nutrition(2000.0,250.0,120.0,57.777777),PlanCodec.encode(Plan())))
+        store.recordFood(day-1,7,1.0);store.recordFood(day-1,8,1.0)
+        assertEquals(2,repo.dao.allIntakes().count {it.day==day-1})
+        val single=repo.recommend(day,mapOf(7L to 1.0))
+        assertEquals(1.0,single.quantities.getValue(7L),0.0);assertFalse(single.quantities.containsKey(8L))
+    }
     @Test fun dailyIntakeAcrossTwoFoodsReducesRecommendationButManualRecordCanExceed()=runBlocking {
         seed();repo.record(day,mapOf(7L to 1.0))
         val result=repo.recommend(day,emptyMap())

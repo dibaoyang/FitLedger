@@ -1,45 +1,63 @@
-# 轻衡1.9.1 同单位分区修正版
+# 轻衡1.11发布构建
 
-整理日期：2026-10-28；编译及自动检查完成于2026-10-27。用户尚未下载上一份1.9.1，明确要求修正后保持版本号重新打包。本次APK与源码均使用同一份已检查工程。
+日期：2026-11-01。用户明确要求「打包吧」。在原D盘工程将两批已完成的功能一起打包，旧1.10构建记录保留在BUILD_STATUS_1.10.md，全部旧交付文件保留。
+
+## 安装包与源码
 
 | 项目 | 结果 |
 | --- | --- |
-| versionName／versionCode | **1.9.1／12**，按要求保持不变 |
-| applicationId | **com.fitledger**，不变 |
-| Room／备份格式 | **8／11**，本次规则修正不再变化 |
-| 新增Migration | 本次修正无；相对1.9仍使用原有显式7→8及完整1→8迁移链 |
-| APK | `FitLedger-v1.9.1-update.apk`，release、非debuggable |
-| APK大小／SHA-256 | 52601354字节；`ea62394aabd3bbd4e2507e89346d09087e1cee99b269f7c9a64b9e52aa43f6f1` |
-| 源码ZIP | `FitLedger-v1.9.1-source.zip`，包含完整源码、schema、测试和说明 |
-| 平台 | Android8.0／API26起，目标API35 |
+| versionName／versionCode | **1.11／14**（前版1.10／13） |
+| applicationId | **com.fitledger**，保持一致 |
+| APK | **FitLedger-v1.11-update.apk**，release、非debuggable |
+| APK大小 | **53,161,998字节**，约53.16MB／50.70MiB |
+| APK SHA-256 | ea0f8861d735489cdb6724fdc4ba67eed3469a04b8432e10eb7aa75a02699d74 |
+| 源码ZIP | **FitLedger-v1.11-source.zip**，工程、测试、schema1～13、Gradle Wrapper、图标和说明文档 |
+| Android要求 | Android8.0／API26起，目标API35 |
 
-## 修正后的规则
+文件位于D:\Codex\Workspaces\2026-09-17\referenced-chatgpt-conversation-this-is-an\outputs。源码解压后入口为FitLedger；排除签名私钥、真实数据库、真实备份、SDK、本地配置、安装包及构建缓存。安装包与源码的最终校验值见同目录FitLedger-v1.11-SHA256.txt。
 
-- g分区只接受原生单位为g的食品；份分区只接受按份记录的食品。按原生数量1:1合计，不再用每份克重或分区份换算混放。
-- 每日上限和单次推荐上限分别填写，单位跟随该分区。例如每日300g、单次150g，或每日3份、单次2份；单次留空仍跟随每日上限，并扣除今日已经摄入的量。手动摄入不受推荐限量约束。
-- 分区内搜索、多选只提供同单位食品；移动来源先提示，一次事务保存。添加、编辑、推荐和采纳均检查单位，不能绕过界面筛选混入另一单位。
-- 旧分区有混合单位或旧份数换算时会显示待整理，暂停该区推荐；可经确认将不匹配食品移至未分区，再核对单位、重新填写上限并保存。没有自动删除食品、转换旧限量或改写摄入记录。
+## 本次更新
 
-## 文件与兼容
+完整的朋友式公告和16项功能入口见[UPDATE_1.11.md](UPDATE_1.11.md)。本次包含自制配方、制作批次与分装、未来1～7天预设、周预算、减少重复推荐、整套组合推荐、重量比例、批量编辑、待吃／已吃、推荐条件档案、食品最小量、自定义食品周期、条件搭配、跨日期搜索、自定义准备条件与整数份兼容。
 
-主要修改 `FoodZoneQuotas.kt`、`Repository.kt`、`ZoneFoodPicker.kt`、`FoodZones.kt`、`FoodLibraryScreen.kt`、`Screens.kt`、`LedgerViewModel.kt` 及对应测试、README、GitHub文案和更新说明。
+推荐复验后进入待吃，点「已吃」才计入实际摄入。食品周期从该食品已保存的最早实际摄入日开始，默认7天、可选1～366天，同日多次只算一个出现日；周饮食预算仍按周一至周日统计。新份数为整数，旧的小数份、身体、摄入、目标、配方等快照保留原值。未知费用和未知宏量继续保留未知状态。
 
-本轮没有修改实体、Room schema、Migration或备份格式；旧换算字段保留存储和备份兼容，推荐不再使用其跨单位换算。热修工程schema1～8、待发布主工程schema1～9全部哈希不变。数据库仍为 `ledger.db`，DataStore仍为 `settings`，没有destructive migration或启动清空逻辑。历史身体、DailyTarget、饮食、运动、营养和费用快照保留。
+没有加入食品替换、预设与实际对比、整周模板、CSV食品导入或已取消的数量倍数按钮。开发过程记录见PENDING_RECIPES_WEEK_RATIOS.md和PENDING_38_47.md。
 
-前一份同版本APK、源码ZIP及源码导出文件夹在替换前归档至任务目录 `work/replaced-v191-before-strict-2026-10-27/`。此前1.9及更早发行文件原样保留。其他尚未发布的功能继续保留在主开发工程，没有随本次热修打包。
+## 数据升级
 
-## 检查结果
+- Room为**13**，与打包前已检查源码一致；从旧1.10的Room11通过显式**11→12→13**升级。更早安装使用完整**1→13**迁移链。
+- **11→12**：创建food_recipes及关联食品唯一索引，给food_combos和food_preset_plans增加默认空字符串的ratioRules。
+- **12→13**：foods增加默认0的minimum与默认空字符串的preparationTags；创建pending_foods、recipe_batches及索引。已有身体、目标、饮食、配方和偏好不因普通升级被重算或清空。
+- schema1～13在本次发布构建中保持不变；旧1.10源码ZIP中的schema1～11与当前文件逐字节一致。真实SQLite已逐一验证旧schema1～12到13的迁移与历史值保留，含旧小数份、配方、自增编号和设置恢复日志。
+- 数据库仍为ledger.db，DataStore仍为settings，没有destructive migration、启动清库或清空偏好。
+- 备份格式**17**，可读旧**1～16**。新增待吃、批次、档案、规则和食品字段随完整备份保存；明确恢复继续采用完整校验、确认、恢复前副本、Room事务和设置同步恢复日志。待吃确认标记涉及的摄入编号下限也会保留。
+- 新版备份不能导回旧App；升级后的数据库不要降级交给旧APK使用。
 
-执行 `testDebugUnitTest lintDebug compileDebugAndroidTestKotlin assembleRelease --offline`，**BUILD SUCCESSFUL**。
+## 签名与覆盖安装
 
-- **282项本地测试通过：0失败、0错误、0跳过**。包括真实SQLite完整旧版本升级及记录保留、备份兼容、严格同单位累计、每日扣除和单次上限、旧分区暂停、锁定与采纳复验。
-- **76项Android设备测试代码编译通过，未在设备执行**。覆盖批量添加／移出事务、失败回滚、旧字段及摄入快照保留。
-- Android Lint：**0错误、5个既有警告、1个信息提示**；release Lint Vital通过。
-- 图标原图不变；Manifest无新增联网、相机或全相册权限；版本码12及包名核对通过。
-- 使用原工程外更新密钥。包含新版的13份已交付APK签名与包名一致，旧正式版本均低于版本码12。证书SHA-256：`45bbe006cb3504fbb0e422289f4c04ab433f4e226d9985101968f5312e7b7af0`。
+使用工程外的原更新密钥，Gradle原证书保护检查通过。apksigner对新版及全部旧交付共**15份APK**验证：证书SHA-256一致，包名均为com.fitledger；新版versionCode14高于全部旧包。aapt确认新版不可调试，没有新增网络访问权限。既有离线识别模型继续内置在安装包中。
 
-没有连接手机或模拟器，未做真机覆盖安装或触摸交互测试。签名对比针对此前交付文件，未直接读取手机已安装应用的证书。原始证据见任务目录 `work/verification-v1.9.1-strict/`。
+证书SHA-256：45bbe006cb3504fbb0e422289f4c04ab433f4e226d9985101968f5312e7b7af0
 
-**安装前先在旧App导出备份并另存，然后直接覆盖安装。不要卸载旧App，不要清除应用数据。** 若手机安装的是此前交付的1.9或更早APK，本包满足同包名、同证书和更高版本码的更新条件。新版备份不能导回旧版App。
+核对对象为此前交付的APK文件，尚未从手机读取已安装应用的证书。若手机安装的仍是此前交付包，本版满足同包名、同证书和更高版本码的覆盖升级条件。没有实际执行手机覆盖升级或触摸测试。
 
-源码ZIP不含签名私钥、真实用户数据库／备份、APK、构建缓存或本地SDK配置。使用方式见[README](README.md)，朋友版说明见[更新公告](UPDATE_1.9.1.md)。
+**先在旧App导出JSON备份并另存到App外，再打开新APK选择「更新／安装」。不要卸载旧App，也不要清除应用数据。** 若系统提示签名冲突或降级，保留旧App和数据并核对文件，不要通过卸载绕过。
+
+## 验证结果与实际范围
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 本地JVM测试 | **507项，0失败、0错误、0跳过** |
+| 主程序与正式构建 | debug／release编译和assembleRelease通过，原签名保护通过 |
+| Android Lint | **0错误、6警告、2提示**；既有图标、资源目录、kapt等事项未扩展修改 |
+| Android测试 | **161项测试源码编译通过，未在设备运行** |
+| 真机覆盖升级 | 未执行；当前没有连接设备／模拟器 |
+| 源码保护 | 217个应用源码、测试、schema、图标与Wrapper文件哈希未变 |
+| 旧文件保护 | 30个旧APK／源码ZIP哈希未变，未覆盖旧交付 |
+| 图标 | 用户选定图标源文件及既有资源保留 |
+
+执行任务：testDebugUnitTest、lintDebug、compileDebugAndroidTestKotlin、assembleRelease，离线构建成功。所用JDK21，应用Java／Kotlin目标17。证据保存在D:\Codex\Workspaces\2026-09-17\referenced-chatgpt-conversation-this-is-an\work\verification-v1.11，包括release.log、summary.json、原始JUnit与Lint报告、合并manifest、APK元数据、全部APK证书核对和交付文件校验值。
+## GitHub发布文档整理
+
+2026-11-01：补充从GitHub旧版1.9.1直接升级的完整迁移说明，合并1.10功能摘要，并恢复此前发布者和联系信息。发布源码ZIP与仓库内容一致；软件代码、资源、构建配置和APK均未修改，原交付文件保留。旧1.9.1的公开构建记录保存在[BUILD_STATUS_1.9.1.md](BUILD_STATUS_1.9.1.md)。

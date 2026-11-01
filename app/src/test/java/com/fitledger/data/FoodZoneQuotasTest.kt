@@ -140,4 +140,13 @@ class FoodZoneQuotasTest {
         assertEquals(listOf(9L,10L),FoodZoneQuotas.candidates(foods,listOf(zone,healthy)).map {it.id})
         assertEquals("g",FoodZoneQuotas.unitFor(zone.copy(limitUnit="G")));assertEquals("份",FoodZoneQuotas.unitFor(zone))
     }
+    @Test fun strictNativeGramQuotaPreservesUnreleasedSingleFoodRestriction() {
+        val grams=zone.copy(dailyMaximum=100.0,limitUnit="G",allowMultipleFoods=false)
+        val foods=listOf(gramBread,gramBread.copy(id=9))
+        val limits=FoodZoneQuotas.limits(listOf(grams),foods,emptyList(),day)
+        assertFalse(limits.single().allowMultipleFoods)
+        reject {Recommender.recommend(FoodZoneQuotas.candidates(foods,listOf(grams)),Nutrition(2000.0),mapOf(8L to 25.0,9L to 25.0),limits)}
+        reject {FoodZoneQuotas.validateRecommendation(mapOf(8L to 25.0,9L to 25.0),foods,listOf(grams),emptyList(),day)}
+        FoodZoneQuotas.validateRecommendation(mapOf(8L to 50.0),foods,listOf(grams),emptyList(),day)
+    }
 }

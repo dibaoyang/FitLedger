@@ -10,12 +10,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.fitledger.data.*
 import com.fitledger.domain.FoodPricing
+import com.fitledger.domain.PortionQuantities
 import java.util.Locale
 
 private val nutritionNames=linkedMapOf("CARBS" to "碳水区","PROTEIN" to "蛋白质区","FAT" to "脂肪区")
 fun String.nutritionLabel()=split(',').mapNotNull {nutritionNames[it]}.joinToString("、").ifEmpty {"未分类"}
 fun Double.money()=String.format(Locale.CHINA,"%.2f",this)
 fun FoodZone.quotaUnitLabel()=if(limitUnit=="G") "g" else "份"
+fun FoodZone.quotaAmount(quantity:Double)=PortionQuantities.format(FoodZoneQuotas.unitFor(this),quantity)
 private fun Double.unitPrice()=java.math.BigDecimal.valueOf(this).setScale(6,java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
 
 fun filterFoods(foods:List<Food>,grouping:String,filter:String):List<Food> = when {
@@ -95,8 +97,8 @@ fun filterFoods(foods:List<Food>,grouping:String,filter:String):List<Food> = whe
     if(s.zones.isEmpty()) return
     Text("种类分区推荐额度",style=MaterialTheme.typography.titleMedium)
     FoodZoneQuotas.summaries(s.zones,s.allFoods,s.intakes,day).forEach {q->
-        Text("${q.zone.name}：今日已吃${if(q.incompatibleUnits) "额度待核对" else " ${q.consumedPortions.f()} ${q.zone.quotaUnitLabel()}"} · 每日上限 ${q.zone.dailyMaximum?.let {"${it.f()} ${q.zone.quotaUnitLabel()}"} ?: "不限"} · 本次最多 ${q.effectiveRecommendationMaximum?.let {"${it.f()} ${q.zone.quotaUnitLabel()}"} ?: "不限"}")
-
+        Text("${q.zone.name}：今日已吃${if(q.incompatibleUnits) "额度待核对" else " ${q.zone.quotaAmount(q.consumedPortions)} ${q.zone.quotaUnitLabel()}"} · 每日上限 ${q.zone.dailyMaximum?.let {"${q.zone.quotaAmount(it)} ${q.zone.quotaUnitLabel()}"} ?: "不限"} · 本次最多 ${q.effectiveRecommendationMaximum?.let {"${q.zone.quotaAmount(it)} ${q.zone.quotaUnitLabel()}"} ?: "不限"}")
+        if(!q.zone.allowMultipleFoods) Text("本区每套推荐最多一种食品，多份同一食品仍可按额度推荐。")
         if(q.incompatibleUnits) Text("${q.zone.name}存在旧单位、旧换算或今日记录单位不一致，暂不参与推荐。请到分区管理整理并确认上限；已有记录保留。",color=MaterialTheme.colorScheme.error)
     }
     Text("本区仅累计同单位食品；锁定食品也占用额度，手动摄入不受推荐上限限制。")
@@ -118,7 +120,7 @@ fun filterFoods(foods:List<Food>,grouping:String,filter:String):List<Food> = whe
         val issues=FoodZoneQuotas.zoneIssues(zone,foods)
         val wrongUnits=foods.filter {!it.isDeleted && it.zoneId==zone.id && !FoodZoneQuotas.matchesUnit(it,zone)}
         Row(Modifier.fillMaxWidth()) {
-            Text("${zone.name}\n每日 ${zone.dailyMaximum?.let {"${it.f()} ${zone.quotaUnitLabel()}"} ?: "不限"} · 单次 ${zone.recommendationMaximum?.let {"${it.f()} ${zone.quotaUnitLabel()}"} ?: "跟随每日"}",Modifier.weight(1f))
+            Text("${zone.name}\n每日 ${zone.dailyMaximum?.let {"${zone.quotaAmount(it)} ${zone.quotaUnitLabel()}"} ?: "不限"} · 单次 ${zone.recommendationMaximum?.let {"${zone.quotaAmount(it)} ${zone.quotaUnitLabel()}"} ?: "跟随每日"}\n${if(zone.allowMultipleFoods) "允许同区多种食品" else "每套推荐限一种区内食品"}",Modifier.weight(1f))
             TextButton(onClick={editing=zone.id;showEditor=true},enabled=!busy) {Text("编辑")}
             TextButton(onClick={deleting=zone.id},enabled=!busy) {Text("删除")}
         }
@@ -138,7 +140,7 @@ fun filterFoods(foods:List<Food>,grouping:String,filter:String):List<Food> = whe
         var unitChanged by rememberSaveable {mutableStateOf(false)}
         var reviewed by rememberSaveable {mutableStateOf(!needsReview)}
         LaunchedEffect(needsReview) {if(needsReview) {daily="";batch="";reviewed=false}}
-
+        var mixed by rememberSaveable {mutableStateOf(zone?.allowMultipleFoods ?: true)}
         val nativeUnit=if(limitUnit=="G") "g" else "份"
         val wrongUnits=if(zone==null) emptyList() else foods.filter {!it.isDeleted && it.zoneId==zone.id && it.unit!=nativeUnit}
         OutlinedTextField(name,{name=it},label={Text("分区名称")},modifier=Modifier.fillMaxWidth(),enabled=!busy)
@@ -157,9 +159,10 @@ fun filterFoods(foods:List<Food>,grouping:String,filter:String):List<Food> = whe
             Checkbox(reviewed,{reviewed=it},enabled=!busy)
             Text("我已按当前单位重新确认上限，留空表示不限",Modifier.weight(1f).padding(top=12.dp))
         }
-
+        Row {Checkbox(mixed,{mixed=it},enabled=!busy);Text("允许本区不同食品同时出现在一套推荐中",Modifier.weight(1f).padding(top=12.dp))}
+        Text("关闭时，本区每套推荐最多选一种食品，可有多份。只影响本区，手动记录不受限制；若锁定两种会提示冲突。")
         Row {
-            Button(onClick={vm.saveZone(FoodZone(zone?.id ?: 0,name.trim(),daily.takeIf {it.isNotBlank()}?.let {it.toDoubleOrNull() ?: Double.NaN},batch.takeIf {it.isNotBlank()}?.let {it.toDoubleOrNull() ?: Double.NaN},zone?.sortOrder ?: 0,limitUnit=limitUnit)) {showEditor=false}},enabled=!busy && wrongUnits.isEmpty() && reviewed) {Text(if(unitChanged || needsReview) "确认新上限并保存" else "保存分区")}
+            Button(onClick={vm.saveZone(FoodZone(zone?.id ?: 0,name.trim(),daily.takeIf {it.isNotBlank()}?.let {it.toDoubleOrNull() ?: Double.NaN},batch.takeIf {it.isNotBlank()}?.let {it.toDoubleOrNull() ?: Double.NaN},zone?.sortOrder ?: 0,allowMultipleFoods=mixed,limitUnit=limitUnit)) {showEditor=false}},enabled=!busy && wrongUnits.isEmpty() && reviewed) {Text(if(unitChanged || needsReview) "确认新上限并保存" else "保存分区")}
             TextButton(onClick={showEditor=false},enabled=!busy) {Text("取消")}
         }
     }

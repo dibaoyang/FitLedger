@@ -35,7 +35,7 @@ fun ZoneFoodPicker(zone:FoodZone,foods:List<Food>,zones:List<FoodZone>,busy:Bool
     val selectedFoods=activeFoods.filter {it.id in selectedIds && it.zoneId!=zone.id}
     val currentCount=activeFoods.count {it.zoneId==zone.id}
     val movedCount=selectedFoods.count {it.zoneId!=null}
-    val visibleFoods=activeFoods.filter {(!onlySelected || (it.id in selectedIds && it.zoneId!=zone.id)) && it.name.contains(query.trim(),ignoreCase=true)}
+    val visibleFoods=activeFoods.filter {(!onlySelected || (it.id in selectedIds && it.zoneId!=zone.id)) && searchFoods(listOf(it),query).isNotEmpty()}
         .sortedWith(compareBy<Food> {if(it.zoneId==zone.id) 0 else 1}.thenBy {it.sortOrder}.thenBy {it.name}.thenBy {it.id})
     val maximumHeight=LocalConfiguration.current.screenHeightDp.dp*0.9f
     Dialog(onDismissRequest={if(!busy) onDismiss()},properties=DialogProperties(dismissOnBackPress=!busy,dismissOnClickOutside=!busy,usePlatformDefaultWidth=false)) {

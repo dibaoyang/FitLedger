@@ -62,6 +62,7 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
     val message by vm.message.collectAsStateWithLifecycle()
     val ready by vm.dataReady.collectAsStateWithLifecycle()
     val muscleNotice by vm.muscleOmittedNotice.collectAsStateWithLifecycle()
+    val undo by vm.undoNotice.collectAsStateWithLifecycle()
     val stage=startupStage(state.loaded,ready,state.preferences,state.bodies.any {it.day==day})
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val scroll=rememberScrollState()
@@ -72,6 +73,10 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
     }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(message) { message?.let { snackbar.showSnackbar(it); vm.message.value=null } }
+    LaunchedEffect(undo) {undo?.let {notice->
+        val result=snackbar.showSnackbar(notice.text,actionLabel="撤销",withDismissAction=true,duration=SnackbarDuration.Long)
+        if(result==SnackbarResult.ActionPerformed) vm.undo(notice.token) else vm.clearUndo(notice.token)
+    }}
     CompositionLocalProvider(LocalEnergyUnit provides state.preferences.energyUnit,LocalBodyVisibility provides state.preferences.visibility,LocalVisibilityAction provides {field,show->vm.visibility(field,show)},LocalPrivacyBusy provides busy,LocalPageScroll provides scroll) {
     MaterialTheme(colorScheme=lightColorScheme(primary=Color(0xFF166953),secondary=Color(0xFF527565),background=Color(0xFFF5F8F5))) {
         Scaffold(snackbarHost={SnackbarHost(snackbar)},bottomBar={
@@ -97,7 +102,7 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
                         0 -> TodayScreen(vm,state,day,busy)
                         1 -> FoodLibraryScreen(vm,state,busy)
                         2 -> DailyFoodsScreen(vm,state,busy)
-                        3 -> TrendsScreen(state,day)
+                        3 -> TrendsScreen(state,day,vm,busy)
                         else -> SettingsScreen(vm,state.preferences,busy)
                     }
                 }
@@ -202,14 +207,19 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
         Text("实际差额 = 今日采用的消耗 + 计入的额外运动 − 已记录摄入；尚未记录完当天饮食时不是全天最终值。手填消耗若已包含运动，请将相应运动设为不重复计入。")
     }
     NutritionCard("今日目标 · 已保存快照",target.nutrition)
-    NutritionCard("今日已摄入",total)
-    NutritionCard("今日剩余 · 负数表示超出",target.nutrition-total)
+    RecordedNutritionCard("今日已摄入",entries)
+    RecordedNutritionCard("今日剩余 · 负数表示超出",entries,target.nutrition)
+    ArrivedFoodPresetSection(vm,s,day,busy)
+    PendingFoodsSection(s.pendingFoods,s.allFoods,s.intakes,day,busy,vm::markPendingEaten,vm::updatePendingFood,vm::removePendingFood)
     Text("记录摄入",style=MaterialTheme.typography.titleLarge)
     if(s.foods.isEmpty()) Text("先到「食品库」添加你能买到的食品。") else {
         var grouping by rememberSaveable {mutableStateOf("TYPE")}
         var filter by rememberSaveable {mutableStateOf("ALL")}
+        var query by rememberSaveable {mutableStateOf("")}
+        var favoritesOnly by rememberSaveable {mutableStateOf(false)}
+        FoodSearchControls(query,favoritesOnly,busy,{query=it},{favoritesOnly=it})
         FoodGroupingFilter(grouping,filter,s.zones,!busy,{grouping=it;filter="ALL"},{filter=it})
-        val selectable=filterFoods(s.foods,grouping,filter)
+        val selectable=filterFoods(searchFoods(s.foods,query,favoritesOnly),grouping,filter)
         if(selectable.isEmpty()) Text("这个分区暂无食品，可切换分区或在食品库添加。")
         if(selectable.isNotEmpty()) key(grouping,filter) {
         var foodId by rememberSaveable { mutableLongStateOf(s.foods.first().id) }
@@ -224,6 +234,7 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
         val quickGrams=WeightFoodShortcut.grams(b.weight,food.unit,s.preferences.weightFoodShortcut)
         Choice("食品",food,selectable,{it.name},enabled=!busy) {foodId=it.id}
         NumberField("摄入数量（${food.unit}）",amount,maskValue=maskAmount) {amount=it;fromWeight=false;revealWeightAmount=false}
+        FoodQuickAmounts(food,s.intakes,day,busy) {amount=PortionQuantities.format("g",it);fromWeight=false;revealWeightAmount=false}
         if(maskAmount) Text("体重已隐藏，快捷填入的数量也已隐藏。可重新快捷填入并确认显示，或手动输入数量。")
         quickGrams?.let {grams ->
             OutlinedButton(onClick={
@@ -237,12 +248,16 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
                 confirmButton={TextButton(onClick={amount=grams.toString();fromWeight=true;revealWeightAmount=true;quickFillConfirmation=false},enabled=!busy) {Text("继续填入")}},
                 dismissButton={TextButton(onClick={quickFillConfirmation=false}) {Text("取消")}})
         }
-        Button(onClick={vm.record(food.id,amount.number())},enabled=!busy && !maskAmount) {Text("记录到今日")}
+        if(food.unit=="份") Text("份数请填写整数。")
+        Button(onClick={vm.record(food.id,amount.number())},enabled=!busy && !maskAmount && amount.toDoubleOrNull()?.let {PortionQuantities.isWhole(food.unit,it)}==true) {Text("记录到今日")}
         }
     }
+    QuickComboRecorder(vm,s,busy)
     DirectNutritionEditor(vm,day,busy)
+    EnergyOnlyEditor(vm,day,busy)
     DailyCostCard(entries)
-    GroupedIntakes(entries,day,busy,vm::remove,vm::editQuantity)
+    WeeklyBudgetCard(day,s.intakes,s.preferences.recommendationExtras)
+    GroupedIntakes(entries,day,busy,vm::remove,vm::editQuantity,vm)
     HorizontalDivider()
     RecommendationScreen(vm,s,busy)
     val hidden=bodyValues.filterKeys {!s.preferences.visibility.shows(it)}
@@ -274,10 +289,18 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
     var kcal by rememberSaveable {mutableStateOf(food?.nutrition?.kcal?.let {energyUnit.fromKcal(it).toString()} ?: "")}; var carbs by rememberSaveable {mutableStateOf(food?.nutrition?.carbs?.toString() ?: "")}
     var protein by rememberSaveable {mutableStateOf(food?.nutrition?.protein?.toString() ?: "")}; var fat by rememberSaveable {mutableStateOf(food?.nutrition?.fat?.toString() ?: "")}
     var step by rememberSaveable {mutableStateOf(food?.step?.toString() ?: if(unit=="g") "10" else "1")}; var max by rememberSaveable {mutableStateOf(food?.maximum?.toString() ?: if(unit=="g") "500" else "5")}
+    var minimum by rememberSaveable {mutableStateOf(food?.minimum?.toString() ?: "0")}
+    var preparation by rememberSaveable {mutableStateOf(food?.preparationTags ?: "")}
+    val parsedPreparation=runCatching {PreparationTags.parseInput(preparation)}
     var allowed by rememberSaveable {mutableStateOf(food?.allowed ?: true)}
     var zoneId by rememberSaveable {mutableStateOf(food?.zoneId ?: initialZone)}
     var nutritionTags by rememberSaveable {mutableStateOf(food?.nutritionTags ?: initialTags)}
+    var aliasesInput by rememberSaveable {mutableStateOf(runCatching {FoodAliases.toInput(food?.aliases ?: "")}.getOrDefault(food?.aliases ?: ""))}
+    val parsedAliases=runCatching {FoodAliases.parseInput(aliasesInput)}
     var price by rememberSaveable {mutableStateOf(food?.pricePerUnitYuan)}
+    var favorite by rememberSaveable {mutableStateOf(food?.favorite ?: false)}
+    var quick by rememberSaveable {mutableStateOf(food?.quickAmounts ?: "")}
+    var portionMass by rememberSaveable {mutableStateOf(food?.gramsPerPortion?.toString() ?: "")}
     var scanned by rememberSaveable {mutableStateOf(false)}
     var scanVersion by rememberSaveable {mutableIntStateOf(0)}
     var reviewed by rememberSaveable {mutableStateOf(false)}
@@ -290,7 +313,7 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
         canonicalKcal=draft.energy?.let(draft.energyUnit::toKcal)
         carbs=draft.carbs?.toString() ?: "";protein=draft.protein?.toString() ?: "";fat=draft.fat?.toString() ?: ""
         unit=draft.unit ?: "g";basis=draft.basis?.toString() ?: ""
-        step=if(unit=="g") "10" else "1";max=if(unit=="g") "500" else "5";price=null
+        step=if(unit=="g") "10" else "1";max=if(unit=="g") "500" else "5";minimum="0";price=null;quick="";portionMass=""
     }
     if(scanned) {
         Text("请核对：每 100g／每份、kcal／kJ、小数点，以及是否错把 NRV% 当作营养值。",color=MaterialTheme.colorScheme.primary)
@@ -299,7 +322,13 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
         if(showSource) Text(scanSource)
     }
     OutlinedTextField(name,{name=it},label={Text("食品名称（可注明生重/熟重）")},modifier=Modifier.fillMaxWidth())
-    Choice("计量",unit,listOf("g","份"),{it},enabled=!busy) {if(it!=unit) {unit=it;basis=if(it=="g") "100" else "1";step=if(it=="g") "10" else "1";max=if(it=="g") "500" else "5";price=null}}
+    OutlinedTextField(aliasesInput,{aliasesInput=it},label={Text("搜索别名（逗号或换行分隔）")},modifier=Modifier.fillMaxWidth(),enabled=!busy,isError=parsedAliases.isFailure)
+    Text(parsedAliases.exceptionOrNull()?.message ?: "最多10个、每个40字；例如“常喝的奶”。只帮助搜索，正式名称、营养和历史记录不变。")
+    Choice("计量",unit,listOf("g","份"),{it},enabled=!busy) {if(it!=unit) {unit=it;basis=if(it=="g") "100" else "1";step=if(it=="g") "10" else "1";max=if(it=="g") "500" else "5";minimum="0";price=null;quick="";portionMass=""}}
+    if(unit=="份") {
+        NumberField("每份重量 g（可留空，重量比例需要）",portionMass,enabled=!busy) {portionMass=it}
+        Text("仅用于重量比例，不改变份分区的原生限量。未知时留空，不能按0计算。")
+    }
     val selectedZone=zones.find {it.id==zoneId}
     val compatibleZone=zoneId==null || selectedZone?.let {FoodZoneQuotas.unitFor(it)==unit}==true
     val requiresZoneReview=food!=null && selectedZone!=null && food.zoneId==zoneId && unit!=food.unit &&
@@ -319,18 +348,30 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
     Text("1 kcal = 4.184 kJ；切换单位会自动换算。")
     NumberField("碳水 g",carbs) {carbs=it}; NumberField("蛋白质 g",protein) {protein=it}; NumberField("脂肪 g",fat) {fat=it}
     NumberField("推荐调整单位 $unit",step) {step=it}; NumberField("单次最大推荐量 $unit",max) {max=it}
+    NumberField("最小推荐量 $unit（0表示不设）",minimum,enabled=!busy) {minimum=it}
+    Text("被推荐时至少达到最小量，之后仍按调整单位变化；也可以整项不选。按份记录和推荐使用整数，旧记录原值保留。")
+    OutlinedTextField(preparation,{preparation=it},label={Text("准备条件（自定义，逗号分隔）")},modifier=Modifier.fillMaxWidth(),enabled=!busy,isError=parsedPreparation.isFailure)
+    Text(parsedPreparation.exceptionOrNull()?.message ?: "例如：即食、微波、下锅；名称可自己修改。在推荐规则中选择当天可用的条件。")
     key(unit,scanVersion) {FoodPriceEditor(unit,price,!busy) {price=it}}
+    Row {Checkbox(favorite,{favorite=it},enabled=!busy);Text("收藏食品",Modifier.padding(top=12.dp))}
+    OutlinedTextField(quick,{quick=it},label={Text("常用数量 $unit（最多8个，用逗号分隔）")},modifier=Modifier.fillMaxWidth(),enabled=!busy)
+    Text("例如 g 食品填 50,100,200；份数食品填 1,2,3。留空使用默认快捷量，同时可看到最近一次记录的量。")
     Row {Checkbox(allowed,{allowed=it});Text("允许参与推荐",Modifier.padding(top=12.dp))}
     if(scanned) Row {Checkbox(reviewed,{reviewed=it});Text("我已对照包装核对单位、基准和所有营养数值",Modifier.padding(top=12.dp).weight(1f))}
     Row {Button(onClick={save(Food(food?.id ?: 0,name.trim(),unit,basis.number(),Nutrition(canonicalKcal ?: Double.NaN,carbs.number(),protein.number(),fat.number()),step.number(),max.number(),allowed,energyUnit.name,
         zoneId=zoneId,zonePortionSize=if(food!=null && food.zoneId==zoneId) food.zonePortionSize else 1.0,
-        sortOrder=food?.sortOrder ?: 0,nutritionTags=nutritionTags,pricePerUnitYuan=price,
-        gramsPerPortion=food?.gramsPerPortion))},enabled=!busy && compatibleZone && !requiresZoneReview && (!scanned || reviewed)) {Text("保存食品")};TextButton(onClick=close,enabled=!busy) {Text("关闭编辑")}}
+        sortOrder=food?.sortOrder ?: 0,nutritionTags=nutritionTags,pricePerUnitYuan=price,favorite=favorite,quickAmounts=quick.replace('，',',').replace(" ",""),
+        gramsPerPortion=if(portionMass.isBlank()) null else portionMass.toDoubleOrNull() ?: Double.NaN,aliases=parsedAliases.getOrDefault(""),minimum=minimum.number(),preparationTags=parsedPreparation.getOrDefault("")))},enabled=!busy && parsedAliases.isSuccess && parsedPreparation.isSuccess && compatibleZone && !requiresZoneReview && (!scanned || reviewed)) {Text("保存食品")};TextButton(onClick=close,enabled=!busy) {Text("关闭编辑")}}
 }
 @Composable private fun RecommendationScreen(vm: LedgerViewModel,s: LedgerState,busy: Boolean) {
     val day by vm.today.collectAsStateWithLifecycle()
     var preferValue by rememberSaveable(day) {mutableStateOf(false)}
+    val locks = remember(day) {mutableStateMapOf<Long,String>()}
     Text("帮我搭配",style=MaterialTheme.typography.titleLarge)
+    if(s.intakes.any {it.day==day && !it.macrosKnown}) {
+        Text(IntakeNutritionTotals.INCOMPLETE_MESSAGE,color=MaterialTheme.colorScheme.error)
+        return
+    }
     Text("可锁定必吃食品。锁定量是本次还要吃的精确量，采用后计入摄入；不要重复记录。")
     ZoneQuotaOverview(s,day)
     Row {Checkbox(preferValue,{preferValue=it;vm.suggestion.value=null},enabled=!busy);Text("性价比优先",Modifier.padding(top=12.dp))}
@@ -343,8 +384,9 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
     }
     val eligibleIds=FoodZoneQuotas.candidates(s.allFoods,s.zones).filter {it.allowed}.map {it.id}.toSet()
     val allowed = s.foods.filter {it.id in eligibleIds}
-    val locks = remember {mutableStateMapOf<Long,String>()}
     val allowedIds=allowed.map {it.id}.toSet()
+    val lockSnapshot=locks.toMap()
+    LaunchedEffect(s.intakes,s.foods,s.targets,s.zones,s.combos,day,lockSnapshot,preferValue,s.preferences.recommendationPolicy,s.preferences.recommendationExtras) {vm.invalidateRecommendation()}
     val invalidLockIds=locks.keys.filter {it !in allowedIds}
     LaunchedEffect(allowedIds) {vm.suggestion.value=null}
     if(invalidLockIds.isNotEmpty()) {
@@ -355,24 +397,38 @@ private fun String.number() = toDoubleOrNull() ?: Double.NaN
         }}
     }
     allowed.forEach { f ->
-        Row {Checkbox(f.id in locks,{if(it) locks[f.id]=f.step.toString() else locks.remove(f.id);vm.suggestion.value=null},enabled=!busy);Text("锁定 ${f.name}",Modifier.padding(top=12.dp))}
-        if(f.id in locks) NumberField("必吃量 ${f.unit}（步长 ${f.step.f()}）",locks.getValue(f.id),enabled=!busy) {locks[f.id]=it;vm.suggestion.value=null}
+        Row {Checkbox(f.id in locks,{if(it) locks[f.id]=PortionQuantities.format("g",f.candidate().step) else locks.remove(f.id);vm.suggestion.value=null},enabled=!busy);Text("锁定 ${f.name}",Modifier.padding(top=12.dp))}
+        if(f.id in locks) NumberField("必吃量 ${f.unit}（步长 ${PortionQuantities.format(f.unit,f.candidate().step)}）",locks.getValue(f.id),enabled=!busy) {locks[f.id]=it;vm.suggestion.value=null}
     }
     Button(onClick={vm.recommend(locks.mapValues {it.value.number()},preferValue)},enabled=!busy && allowed.isNotEmpty() && invalidLockIds.isEmpty()) {Text("计算搭配")}
+    val diagnostics by vm.diagnostics.collectAsStateWithLifecycle()
+    val trial by vm.recommendationTrial.collectAsStateWithLifecycle()
+    RecommendationDiagnosticsSection(diagnostics,trial,s.foods,LocalEnergyUnit.current,busy || invalidLockIds.isNotEmpty(),
+        {vm.trialRecommendation(it,locks.mapValues {it.value.number()},preferValue)},vm::applyTrialPolicy)
+    Button(onClick={vm.compareRecommendations(locks.mapValues {it.value.number()})},enabled=!busy && allowed.isNotEmpty() && invalidLockIds.isEmpty()) {Text("生成多方案对比")}
+    val comparisons by vm.comparisons.collectAsStateWithLifecycle()
+    RecommendationComparisonSection(comparisons,s.foods,LocalEnergyUnit.current,busy || invalidLockIds.isNotEmpty(),
+        {vm.compareRecommendations(locks.mapValues {it.value.number()},more=comparisons!=null)},
+        {vm.adoptComparison(it,false)},{vm.adoptComparison(it,true)},
+        {ExtendedRecommendations.deviations(s.allFoods,s.combos,s.preferences.recommendationExtras,it.suggestion.quantities)})
     val suggestion by vm.suggestion.collectAsStateWithLifecycle()
     suggestion?.let { result ->
         if(result.quantities.isEmpty()) {
             Text("当前食品未找到可添加的组合，请检查今日剩余目标、食品和限制条件。")
             return
         }
-        result.quantities.forEach { (id,q) -> s.foods.find {it.id==id}?.let {Text("${it.name}　${q.f()} ${it.unit}")} }
+        result.quantities.forEach { (id,q) -> s.foods.find {it.id==id}?.let {Text("${it.name}　${PortionQuantities.format(it.unit,q)} ${it.unit}")} }
+        val ratioPreview=runCatching {ExtendedRecommendations.deviations(s.allFoods,s.combos,s.preferences.recommendationExtras,result.quantities)}
+        RatioDeviationRows(s.foods,ratioPreview.getOrDefault(emptyList()))
+        ratioPreview.exceptionOrNull()?.let {Text("比例条件已变化，请重新生成方案。",color=MaterialTheme.colorScheme.error)}
         NutritionCard("推荐合计",result.nutrition)
         Text(result.costYuan?.let {"本次预计费用 ¥${it.money()}"} ?: "本次包含未计价食品，费用暂不完整")
         val target = s.targets.find {it.day==day}?.nutrition ?: return
         val eaten = s.intakes.filter {it.day==day}.fold(Nutrition()) {a,i->a+i.nutrition}
-        NutritionCard("采用后剩余 · 负数表示超出",target-eaten-result.nutrition)
+        NutritionCard("全部吃完后预计剩余 · 负数表示超出",target-eaten-result.nutrition)
         Text("近似搭配，不保证存在完全匹配的组合。可调整食品库或锁定量后重算。")
-        Button(onClick={vm.adopt()},enabled=!busy && result.quantities.isNotEmpty()) {Text("采用并记录全部食品")}
+        Button(onClick={vm.adopt()},enabled=!busy && result.quantities.isNotEmpty()) {Text("加入待吃清单")}
+        Text("保存后尚不计入摄入，吃后在待吃清单点击已吃。")
     }
 }
 

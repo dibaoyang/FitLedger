@@ -35,6 +35,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
     val state by vm.state.collectAsStateWithLifecycle()
     val day by vm.today.collectAsStateWithLifecycle()
     RecommendationSettingsSection(vm,p.recommendationPolicy,busy)
+    RecommendationExtrasSection(p.recommendationExtras,state.foods,state.combos,state.intakes,day,busy,vm::recommendationExtras)
+    RecommendationRulesSection(p.recommendationExtras.rules,state.foods,state.zones,state.intakes,day,busy,vm::recommendationRules)
+    RecommendationProfileSection(p.recommendationProfiles,p.recommendationPolicy,p.recommendationExtras,busy,
+        vm::saveRecommendationProfile,vm::deleteRecommendationProfile,vm::applyRecommendationProfile)
     Text("显示偏好",style=MaterialTheme.typography.titleLarge)
     Choice("默认热量单位",p.energyUnit,EnergyUnit.entries.toList(),{it.label}) {vm.energyUnit(it)}
     Text("首页、食品、推荐和趋势使用此单位显示；改变单位不会改变实际热量。")
@@ -169,7 +173,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 }
 
 private data class Metric(val label: String,val unit: String,val color: Color,val field:BodyField?=null,val value:(LedgerState,Long)->Double?)
-private fun total(s: LedgerState,day: Long) = s.intakes.filter {it.day==day}.takeIf {it.isNotEmpty()}?.fold(Nutrition()) {a,i->a+i.nutrition}
+private fun total(s: LedgerState,day: Long) = s.intakes.filter {it.day==day}.takeIf {it.isNotEmpty()}?.let(IntakeNutritionTotals::calculate)
 private val metrics = listOf(
     Metric("体重","kg",Color(0xFF167D65),BodyField.WEIGHT) {s,d->s.bodies.find {it.day==d}?.weight},
     Metric("体脂率","%",Color(0xFF9B671A),BodyField.BODY_FAT) {s,d->s.bodies.find {it.day==d}?.fatPercent},
@@ -187,7 +191,14 @@ private val metrics = listOf(
     Metric("计划热量差（消耗−目标）","kcal",Color(0xFF497594)) {s,d->totalEnergy(s,d)?.let {energy->s.targets.find {it.day==d}?.nutrition?.let {energy-it.kcal}}},
     Metric("估算实际热量差（总消耗−已记录摄入）","kcal",Color(0xFFA5496D)) {s,d->totalEnergy(s,d)?.let {energy->total(s,d)?.let {energy-it.kcal}}}
 )
-@Composable fun TrendsScreen(s: LedgerState,day: Long) {
+@Composable fun TrendsScreen(s: LedgerState,day: Long,vm:LedgerViewModel?=null,busy:Boolean=false) {
+    var page by rememberSaveable {mutableStateOf("TREND")}
+    var historyDay by rememberSaveable {mutableStateOf<Long?>(null)}
+    Choice("查看",page,if(vm==null) listOf("TREND","COST") else listOf("TREND","HISTORY","SEARCH","COST","EXPORT"),{when(it) {"HISTORY"->"历史日历";"SEARCH"->"搜索饮食记录";"COST"->"费用回顾";"EXPORT"->"记录导出";else->"趋势图与总结"}},enabled=!busy) {page=it}
+    if(page=="SEARCH" && vm!=null) {IntakeSearchScreen(s,busy) {historyDay=it;page="HISTORY"};return}
+    if(page=="EXPORT" && vm!=null) {RecordExportScreen(vm,s,day,busy);return}
+    if(page=="HISTORY" && vm!=null) {HistoryScreen(vm,s,busy,historyDay);return}
+    if(page=="COST") {CostReviewSection(s,day);return}
     TrendSummarySection(s,day)
     val energyUnit=LocalEnergyUnit.current
     var days by rememberSaveable {mutableIntStateOf(30)}

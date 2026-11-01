@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_heading">轻衡 · 今日饮食</string>
+    <string name="widget_refresh">刷新</string>
+    <string name="widget_refresh_description">刷新今日饮食记录</string>
+    <string name="widget_open_description">点击打开轻衡查看今日记录</string>
+</resources>

@@ -63,7 +63,9 @@ object FoodZoneQuotas {
 
     fun limits(zones:List<FoodZone>,allFoods:List<Food>,intakes:List<Intake>,day:Long):List<ZoneLimit> =
         summaries(zones,allFoods,intakes,day).mapNotNull {summary ->
-            summary.effectiveRecommendationMaximum?.let {ZoneLimit(summary.zone.id,summary.zone.name,it)}
+            val maximum=summary.effectiveRecommendationMaximum
+            if(maximum==null && summary.zone.allowMultipleFoods) null
+            else ZoneLimit(summary.zone.id,summary.zone.name,maximum?:Double.MAX_VALUE,summary.zone.allowMultipleFoods)
         }
 
     /** Called inside the same Room transaction as recommendation adoption, against fresh intake data. */
@@ -71,11 +73,13 @@ object FoodZoneQuotas {
         val byId=foods.associateBy {it.id}
         val summaries=summaries(zones,foods,intakes,day).associateBy {it.zone.id}
         val used=mutableMapOf<Long,Double>()
+        val selected=mutableMapOf<Long,MutableSet<Long>>()
         quantities.toSortedMap().forEach {(id,quantity) ->
             require(quantity.isFinite() && quantity>0) {"摄入量须大于 0"}
             val food=requireNotNull(byId[id]) {"食品不存在，请重新推荐"}
             val zoneId=food.zoneId?:return@forEach
             val summary=requireNotNull(summaries[zoneId]) {"食品分区已变化，请重新推荐"}
+            selected.getOrPut(zoneId) {mutableSetOf()}.add(id)
             val size=requireNotNull(quotaSize(food,summary.zone)) {"食品单位与分区不符，或旧分区换算尚未确认，请在食品库调整"}
             val amount=quantity/size
             val total=(used[zoneId]?:0.0)+amount
@@ -84,6 +88,7 @@ object FoodZoneQuotas {
         }
         used.forEach {(id,amount) ->
             val summary=summaries.getValue(id)
+            require(summary.zone.allowMultipleFoods || selected.getValue(id).size<=1) {"${summary.zone.name}不允许同一套推荐出现多种食品，请重新推荐或只保留一种"}
             require(!summary.incompatibleUnits) {"${summary.zone.name}的食品或今日记录单位不一致，或旧份数规则尚未确认，请先在食品库调整"}
             val maximum=summary.effectiveRecommendationMaximum
             require(maximum==null || QuotaMath.within(amount,maximum)) {"${summary.zone.name}超出每日剩余或本次推荐上限，请重新推荐"}
